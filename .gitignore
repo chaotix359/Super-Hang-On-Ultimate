@@ -1,0 +1,56 @@
+# ======================================================================
+#  NEVER COMMIT: ROMs, game data, or anything made from them
+# ======================================================================
+shangon.zip
+*.zip
+*.bin
+# ...except the coverage record: addresses of executed code only, no ROM contents; it keeps setup.py fast and the patches valid
+!source/recomp/coverage.bin
+*.gen
+*.smd
+*.sav
+*.nv
+shangon.ini
+gamepad.log
+music/
+
+# Disassembly / coverage files made from the ROM by the recompiler tools
+*.dasm
+cov/
+
+# ======================================================================
+#  Code translated from Sega's program ROM (per README-DEV.md)
+#  These two folders are the game's own program turned into C. They are
+#  needed to BUILD, so they stay on your computer, but they are kept out
+#  of Git so a public repository does not carry Sega's code.
+#  Only for a PRIVATE repository that nobody else can see: delete these
+#  two lines if you want them backed up on GitHub too.
+# ======================================================================
+source/src/gen/
+source/recomp/overrides/
+
+# ======================================================================
+#  Build output and tools
+# ======================================================================
+build/
+source/build/
+source/shotest
+source/toolchain/sysroot/
+source/toolchain/mingw-w64/
+*.o
+*.obj
+*.exe
+*.app/
+*.dmg
+
+# Installer working folders
+installer/windows/stage/
+installer/windows/cache/
+installer/windows/output/
+installer/mac/output/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

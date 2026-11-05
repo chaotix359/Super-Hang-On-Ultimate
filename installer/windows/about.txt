@@ -1,0 +1,24 @@
+SUPER HANG-ON ULTIMATE
+Native Port + Mega Drive Original Mode Mod
+
+This installer BUILDS the game on your computer from your own copy of the arcade ROM.
+
+What you need:
+  * The MAME ROM set "shangon.zip" (Super Hang-On sitdown/upright, unprotected).
+    It is NOT included with this installer.
+  * Optional: your Mega Drive ROM, "Super Hang-On (World) (En,Ja) (Rev A)", for Original Mode.
+  * About 1.5 GB of free disk space while installing (most of it is temporary) and
+    about 5-15 minutes. The build tools are removed again when the installer finishes.
+
+What happens:
+  1. Your ROM is read and the game's program is translated to C code on this computer.
+  2. The game is compiled with the bundled compiler (LLVM/MinGW).
+  3. SuperHangOn.exe is installed with your ROM(s) in the game folder.
+
+Nothing from SEGA's game is contained in this installer. Super Hang-On is (c) SEGA; this project
+is not affiliated with SEGA. The program built on your computer contains code translated from your
+ROM: it is for your own use. Please do not copy or share it.
+
+The project's own source code is under the MIT licence (see LICENSE and NOTICE.md in the game folder).
+The installer temporarily uses LLVM/MinGW-w64 (Apache-2.0 with LLVM exception, and permissive
+MinGW-w64 licences) and Python (PSF licence); their licence texts are inside those folders.

@@ -1,0 +1,32 @@
+--- a/M_002A0C.c
++++ b/M_002A0C.c
+@@ -1,4 +1,10 @@
+-/* Hand-maintained override of M_002A0C (generated code copied by extract_override.py) */
++/* Hand-maintained override of M_002A0C: project a game object to a hardware sprite entry.
++ *
++ * Widescreen change: the original rejects objects whose left edge is at sprite-X >= 0x200
++ * (screen x >= 328) or whose right edge is at sprite-X <= 0xC0 (screen x <= 8). In 16:9 the view
++ * extends sho_wide_xo pixels further on each side, so both limits move out by that amount.
++ * The entry writer (0x2C0E) already keeps 12 bits of X, which the widescreen renderer uses.
++ * With sho_wide_xo == 0 this is exactly the original code. */
+ #include "rc_runtime.h"
+ #include "rc_overrides.h"
+ 
+@@ -312,7 +318,7 @@
+     OP(0x002AC6, 0x302E, m68k_op_move_16_d_di, 12);
+     STEP();
+ L_002AC8: /* cmpi.w  #$200, D0 */
+-    OP(0x002ACA, 0x0C40, m68k_op_cmpi_16_d, 8);
++    OVR_CMPI16_D(0x002ACC, 0, 0x200 + sho_wide_xo);      /* was: cmpi.w #$200, D0 */
+     STEP();
+ L_002ACC: /* bcc     $2ae2 */
+     OP(0x002ACE, 0x6414, m68k_op_bcc_8, 10);
+@@ -328,7 +334,7 @@
+     OP(0x002AD6, 0xD242, m68k_op_add_16_er_d, 4);
+     STEP();
+ L_002AD6: /* cmpi.w  #$c0, D1 */
+-    OP(0x002AD8, 0x0C41, m68k_op_cmpi_16_d, 8);
++    OVR_CMPI16_D(0x002ADA, 1, 0x0C0 - sho_wide_xo);      /* was: cmpi.w #$c0, D1 */
+     STEP();
+ L_002ADA: /* bls     $2ae2 */
+     OP(0x002ADC, 0x6306, m68k_op_bls_8, 10);

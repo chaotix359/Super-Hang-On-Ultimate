@@ -1,0 +1,31 @@
+--- a/M_006F16.c
++++ b/M_006F16.c
+@@ -1,6 +1,19 @@
+-/* Hand-maintained override of M_006F16 (generated code copied by extract_override.py) */
++/* Hand-maintained override of M_006F16: spawn a roadside object into a free object slot.
++ * Addition: on a Mega Drive course (sho_mdcourse.c), the converted pattern entries carry the Mega Drive
++ * object kind in their second byte (which the arcade skips); record it against the slot's sprite
++ * palette so the renderer can draw the Mega Drive picture for that object. Otherwise unchanged. */
+ #include "rc_runtime.h"
+ #include "rc_overrides.h"
++
++extern int md_obj_active;              /* a Mega Drive course is installed */
++extern unsigned char md_obj_kind[256]; /* sprite palette (d4 low byte) -> Mega Drive kind + 1, 0 = arcade object */
++static void md_obj_hook(void) {
++    if (!md_obj_active) return;
++    uint32_t a5 = REG_A[5], slot = REG_A[0] + (REG_D[0] & 0xffff);
++    uint32_t entry = m68k_read_memory_32(a5 + 0x20) + m68k_read_memory_16(a5 + 0x24) - 6;
++    unsigned kind = m68k_read_memory_8(entry + 1), reg = m68k_read_memory_16(slot + 8);
++    md_obj_kind[(0x34 + reg) & 0x3f] = (unsigned char)(kind + 1);   /* sprite palette number (d4 bits 0-5) */
++}
+ 
+ void M_006F16(uint32_t e) {
+     switch (e) {
+@@ -128,6 +141,7 @@
+     OP(0x006F72, 0x08F0, m68k_op_bset_8_s_ix, 22);
+     STEP();
+ L_006F76: /* move.w  ($28,A5), ($28,A0,D0.w) */
++    md_obj_hook();
+     OP(0x006F78, 0x31AD, m68k_op_move_16_ix_di, 22);
+     STEP();
+ L_006F7C: /* move.w  #$80, ($14,A0,D0.w) */

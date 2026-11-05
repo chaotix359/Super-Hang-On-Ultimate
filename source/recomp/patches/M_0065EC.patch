@@ -1,0 +1,32 @@
+--- a/M_0065EC.c
++++ b/M_0065EC.c
+@@ -1,6 +1,20 @@
+-/* Hand-maintained override of M_0065EC (generated code copied by extract_override.py) */
++/* Hand-maintained override of M_0065EC: centrifugal push of the bike on curves.
++ * D0 = road curvature * speed / target speed (the outward push this frame), then added to the
++ * bike's lateral position $260022. Addition: Mega Drive Enhancements (Original Mode races) scale
++ * the push by the tyre's grip and wear. md_grip_hook() leaves D0 untouched otherwise, so with the
++ * enhancements off the routine is exactly the original. */
+ #include "rc_runtime.h"
+ #include "rc_overrides.h"
++
++extern int md_grip_q8;   /* 256 = original; set by sho_md.c only during Original Mode races */
++static void md_grip_hook(void) {
++    if (md_grip_q8 == 256) return;
++    int v = (int16_t)(REG_D[0] & 0xffff);
++    v = v * md_grip_q8 / 256;
++    if (v > 32767) v = 32767;
++    if (v < -32768) v = -32768;
++    REG_D[0] = (REG_D[0] & 0xffff0000u) | (uint16_t)v;
++}
+ 
+ void M_0065EC(uint32_t e) {
+     switch (e) {
+@@ -86,6 +100,7 @@
+     OP(0x00662A, 0xD041, m68k_op_add_16_er_d, 4);
+     STEP();
+ L_00662A: /* add.w   $260022.l, D0 */
++    md_grip_hook();
+     OP(0x00662C, 0xD079, m68k_op_add_16_er_al, 16);
+     STEP();
+ L_006630: /* move.w  D0, D1 */

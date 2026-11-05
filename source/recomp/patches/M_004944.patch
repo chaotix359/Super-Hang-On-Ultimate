@@ -1,0 +1,32 @@
+--- a/M_004944.c
++++ b/M_004944.c
+@@ -1,6 +1,20 @@
+-/* Hand-maintained override of M_004944 (generated code copied by extract_override.py) */
++/* Hand-maintained override of M_004944: class-select and music-select input read.
++ * Original: a brake press (ADC 2 crossing $1F) sets the step word ($2,A2) = $261016 to 1; the
++ * callers (0x46E8 class loop, 0x4A42 music loop) add it to the selection and wrap with AND 3.
++ * Addition: gamepad stick/d-pad navigation supplies +1 / -1 (one per call; queued presses follow).
++ * Without gamepad navigation the routine is exactly the original. */
+ #include "rc_runtime.h"
+ #include "rc_overrides.h"
++
++extern int sho_menu_step;
++extern long sho_menu_last_frame, sho_frame_no;
++static void menu_pad_hook(void) {
++    sho_menu_last_frame = sho_frame_no;           /* tells the core a select screen is up */
++    if (sho_menu_step) {
++        m68k_write_memory_16(REG_A[2] + 2, sho_menu_step > 0 ? 0x0001 : 0xffff);
++        sho_menu_step += sho_menu_step > 0 ? -1 : 1;
++    }
++}
+ 
+ void M_004944(uint32_t e) {
+     switch (e) {
+@@ -59,6 +73,7 @@
+     OP(0x004970, 0x357C, m68k_op_move_16_di_i, 16);
+     STEP();
+ L_004974: /* rts */
++    menu_pad_hook();
+     OP(0x004976, 0x4E75, m68k_op_rts_32, 16);
+     STEP();
+     return;

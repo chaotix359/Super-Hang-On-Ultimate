@@ -1,0 +1,42 @@
+--- a/M_008F90.c
++++ b/M_008F90.c
+@@ -1,6 +1,22 @@
+-/* Hand-maintained override of M_008F90 (generated code copied by extract_override.py) */
++/* Hand-maintained override of M_008F90: initial-entry input read.
++ * Original behaviour: the brake (ADC 2) crossing $1F sets the "enter character" flag at ($6,A2);
++ * holding the accelerator (ADC 1) returns D0 = 1 every 10 calls, moving the cursor forward.
++ * Addition: gamepad d-pad up/down return D0 = +1 / -1 (the caller already wraps -1 to the end of
++ * the character row) and the A button sets the enter flag. Without gamepad input the routine is
++ * exactly the original. */
+ #include "rc_runtime.h"
+ #include "rc_overrides.h"
++
++extern int sho_entry_step, sho_entry_select;   /* one-shot requests from the core's input handling */
++extern long sho_entry_last_frame, sho_frame_no;
++static void entry_pad_hook(void) {
++    sho_entry_last_frame = sho_frame_no;          /* tells the core that initial entry is on screen */
++    if (sho_entry_step) {                        /* one character per call; queued presses follow */
++        REG_D[0] = (REG_D[0] & 0xffff0000u) | (sho_entry_step > 0 ? 0x0001u : 0xffffu);
++        sho_entry_step += sho_entry_step > 0 ? -1 : 1;
++    }
++    else if (sho_entry_select) { m68k_write_memory_16(REG_A[2] + 6, 0xffff); sho_entry_select = 0; }
++}
+ 
+ void M_008F90(uint32_t e) {
+     switch (e) {
+@@ -96,6 +112,7 @@
+     OP(0x008FE0, 0x357C, m68k_op_move_16_di_i, 16);
+     STEP();
+ L_008FE4: /* rts */
++    entry_pad_hook();
+     OP(0x008FE6, 0x4E75, m68k_op_rts_32, 16);
+     STEP();
+     return;
+@@ -103,6 +120,7 @@
+     OP(0x008FE8, 0x7000, m68k_op_moveq_32, 4);
+     STEP();
+ L_008FE8: /* rts */
++    entry_pad_hook();
+     OP(0x008FEA, 0x4E75, m68k_op_rts_32, 16);
+     STEP();
+     return;

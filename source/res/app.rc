@@ -1,0 +1,21 @@
+1 ICON "res/shangon.ico"
+1 24 "res/app.manifest"
+1 VERSIONINFO
+FILEVERSION 0,4,0,0
+PRODUCTVERSION 0,4,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Super Hang-On Ultimate"
+      VALUE "FileVersion", "0.4.0"
+      VALUE "ProductName", "Super Hang-On Ultimate"
+      VALUE "OriginalFilename", "SuperHangOn.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

@@ -1,2 +1,17 @@
-# Auto detect text files and perform LF normalization
+# Keep shell scripts and C sources with Unix line endings, even when checked out on Windows.
+# (A script with Windows line endings fails on a Mac with "bad interpreter".)
 * text=auto
+*.sh   text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.m    text eol=lf
+*.py   text eol=lf
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.rc   text eol=lf
+
+*.png  binary
+*.bmp  binary
+*.ico  binary
+*.icns binary
+*.res  binary
