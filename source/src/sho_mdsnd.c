@@ -126,9 +126,11 @@ void mdsnd_command(uint8_t c) {
     last_cmd = c; if (c >= 0x81 && c <= 0x8a) last_music = c; if (c == 0xb0 || c == 0xb1) last_music = 0; if (mdsnd_log) fprintf(stderr, "MDSND cmd %02X\n", c);
     cq_put(c);
 }
+unsigned (*mdsnd_command_hook)(unsigned cmd);   /* may replace the Mega Drive program's sound commands */
 void mdsnd_zwrite(unsigned a, uint8_t v) {
     if (!ready) return;
     a &= 0x1fff;
+    if (a == 0x1c03 && v && mdsnd_command_hook) v = (uint8_t)mdsnd_command_hook(v);
     if (a == 0x1c03) { if (!v) return; cq_put(v); }   /* the mailbox: queued, delivered when the driver is ready for it */
     else zram[a] = v;
     if (a == 0x1c03) { last_cmd = v; if (v >= 0x81 && v <= 0x8a) last_music = v; if (v == 0xb0 || v == 0xb1) last_music = 0; if (mdsnd_log) fprintf(stderr, "MDSND cmd %02X\n", v); }

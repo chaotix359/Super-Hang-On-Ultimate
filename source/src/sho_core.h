@@ -31,6 +31,7 @@ int sho_load_roms(const char *path, char *err, size_t errlen);
  * Call after ROM loading and before reset. Missing/invalid tracks retain original audio.
  * Returns the number of replacement tracks loaded (0..4). */
 void sho_silence_music(void);
+const uint8_t *sho_text_font(void);   /* the arcade's text tiles (ASCII codes = tile numbers), once a ROM set has loaded */
 int sho_load_music(const char *directory, unsigned sample_rate, char *err, size_t errlen);
 
 void sho_reset(void);

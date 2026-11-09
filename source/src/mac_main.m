@@ -34,7 +34,7 @@
 #include "sho_md.h"
 #include "sho_mdgfx.h"
 #include "mac_metal.h"
-#include "mac_launcher.h"
+#include "launcher_core.h"
 #include "ini_file.h"
 
 extern int sho_recomp;
@@ -209,6 +209,32 @@ static int present(void) {
     return mtl_present(sho_framebuffer(), sho_width(), SHO_H, g_filter, x, y, w, h);
 }
 
+/* the launcher (settings screen, loading bar): its 1920x1080 picture, 16:9 with black bars, sharp-bilinear */
+static int present_launcher(void) {
+    if (!g_have_metal || !g_view) return 0;
+    if (g_win.miniaturized || !(g_win.occlusionState & NSWindowOcclusionStateVisible)) return 0;
+    CGFloat sc = g_win.backingScaleFactor > 0 ? g_win.backingScaleFactor : 1.0;
+    NSRect b = g_view.bounds;
+    CGSize ds = CGSizeMake(floor(b.size.width * sc), floor(b.size.height * sc));
+    if (ds.width < 1 || ds.height < 1) return 0;
+    if (g_layer.contentsScale != sc) g_layer.contentsScale = sc;
+    if (!CGSizeEqualToSize(g_layer.drawableSize, ds)) g_layer.drawableSize = ds;
+    NSRect u = usable_rect();
+    int x, y, w, h;
+    lc_view_rect((int)(u.size.width * sc), (int)(u.size.height * sc), &x, &y, &w, &h);
+    const uint32_t *img = lc_image();
+    if (!img) return 0;
+    return mtl_present(img, LC_IW, LC_IH, 2, floor(u.origin.x * sc + 0.5) + x, floor(u.origin.y * sc + 0.5) + y, w, h);
+}
+static void launcher_mouse(NSEvent *e) {   /* a click on the launcher, in canvas pixels */
+    if (!g_in_launcher || !g_view) return;
+    NSPoint p = [g_view convertPoint:e.locationInWindow fromView:nil];   /* the view is flipped: top-left origin */
+    NSRect u = usable_rect();
+    int cx, cy;
+    lc_to_canvas((int)u.size.width, (int)u.size.height, (int)(p.x - u.origin.x), (int)(p.y - u.origin.y), &cx, &cy);
+    lc_click(cx, cy);
+}
+
 static void toggle_fullscreen(void) { if (g_win) [g_win toggleFullScreen:nil]; }
 static void set_view_mode(int m) { g_view_mode = m; save_view_mode(); update_view_width(); update_title(); }
 static void set_filter(int f) { g_filter = f % 3; ini_set_int("video", "filter", g_filter); update_title(); }
@@ -248,6 +274,19 @@ static void key_event(NSEvent *e, int down) {
     unsigned kc = e.keyCode;
     NSEventModifierFlags fl = e.modifierFlags;
     if (fl & NSEventModifierFlagCommand) { if (!down && kc < 128) g_keys[kc] = 0; return; }   /* Cmd+key belongs to the menus */
+    if (g_in_launcher) {   /* the settings screen: arrows (repeat), Return, Space, Esc; F11 still switches fullscreen */
+        if (!down) return;
+        if (kc == K_UP) lc_key(LK_UP);
+        else if (kc == K_DOWN) lc_key(LK_DOWN);
+        else if (kc == K_LEFT) lc_key(LK_LEFT);
+        else if (kc == K_RIGHT) lc_key(LK_RIGHT);
+        else if (e.isARepeat) return;
+        else if (kc == K_RETURN || kc == K_KP_ENTER) lc_key(LK_ENTER);
+        else if (kc == K_SPACE) lc_key(LK_SPACE);
+        else if (kc == K_ESCAPE) lc_key(LK_ESC);
+        else if (kc == K_F11) toggle_fullscreen();
+        return;
+    }
     if (kc < 128) g_keys[kc] = (uint8_t)down;
     if (!down || e.isARepeat) return;
     int ctrl = (fl & NSEventModifierFlagControl) != 0;
@@ -281,6 +320,7 @@ static void flags_event(NSEvent *e) {
 - (void)keyDown:(NSEvent *)e { key_event(e, 1); }
 - (void)keyUp:(NSEvent *)e { key_event(e, 0); }
 - (void)flagsChanged:(NSEvent *)e { flags_event(e); }
+- (void)mouseDown:(NSEvent *)e { launcher_mouse(e); }
 - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; if (g_layer && self.window) g_layer.contentsScale = self.window.backingScaleFactor; }
 @end
 
@@ -784,8 +824,10 @@ static int md_rom_present(void) { char p[PATHN]; return find_md_rom(p, sizeof p)
 /* Mega Drive capture runs on a worker thread while the launcher is open (the arcade has not booted yet,
    so the shared 68000 core is free). Big stack: macOS gives secondary threads only 512 KB by default. */
 static char g_md_path[PATHN]; static pthread_t g_md_thread; static int g_md_thread_on, g_md_ok;
-static void *md_capture_thread(void *p) { char err[256]; (void)p; g_md_ok = mdgfx_capture(g_md_path, err, sizeof err); return NULL; }
+static volatile int g_md_done;   /* the capture thread has finished */
+static void *md_capture_thread(void *p) { char err[256]; (void)p; g_md_ok = mdgfx_capture(g_md_path, err, sizeof err); g_md_done = 1; return NULL; }
 static void start_md_capture(void) {
+    g_md_done = 0;
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
     g_md_thread_on = pthread_create(&g_md_thread, &a, md_capture_thread, NULL) == 0;
     pthread_attr_destroy(&a);
@@ -816,7 +858,7 @@ static void find_game_dir(void) {
     (void)app;
     /* Cmd+Q: leave our own loop so the high scores and settings are saved, then main() returns */
     g_quit = 1; g_running = 0;
-    if (g_in_launcher) launcher_cancel();
+    if (g_in_launcher) lc_key(LK_ESC);
     return NSTerminateCancel;
 }
 - (void)windowWillClose:(NSNotification *)n { (void)n; g_running = 0; }
@@ -843,7 +885,7 @@ static void find_game_dir(void) {
     if (a == @selector(filterSmooth:)) it.state = g_filter == 1 ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(filterSharpBilinear:)) it.state = g_filter == 2 ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(pauseGame:)) it.title = g_paused ? @"Resume" : @"Pause";
-    if (a == @selector(fullScreen:)) it.title = g_fullscreen ? @"Exit Full Screen" : @"Enter Full Screen";
+    if (a == @selector(fullScreen:)) { it.title = g_fullscreen ? @"Exit Full Screen" : @"Enter Full Screen"; return g_win != nil; }   /* (the launcher too) */
     return game;
 }
 @end
@@ -947,6 +989,20 @@ static void pump_events(void) {
     else if (g_fullscreen && !hidden && t - still_since > 2.0 && g_win.isKeyWindow) { [NSCursor setHiddenUntilMouseMoves:YES]; hidden = 1; }
 }
 
+/* the launcher: d-pad / stick directions, A and Start of any pad, as bits (up, down, left, right, A, Start) */
+static int pad_bits(const padstate *p) {
+    return (p->du || p->ly > 0.6f) | (p->dd || p->ly < -0.6f) << 1 | (p->dl || p->lx < -0.6f) << 2 | (p->dr || p->lx > 0.6f) << 3
+         | (p->a != 0) << 4 | (p->start != 0) << 5;
+}
+static int launcher_pad_buttons(void) {
+    int b = 0; padstate p;
+    for (GCController *c in [GCController controllers]) if (read_pad(c, &p)) b |= pad_bits(&p);
+    hid_poll();
+    for (int h = 0; h < g_nhid; h++) if (hid_read(&g_hid[h], &p)) b |= pad_bits(&p);
+    return b;
+}
+static void present_loading(void) { @autoreleasepool { pump_events(); present_launcher(); } }   /* lc_load_step: the loading bar */
+
 static int run(int argc, char **argv) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -982,8 +1038,25 @@ static int run(int argc, char **argv) {
 
     int show_launcher = ini_int("launcher", "show", 1) && !play_now;
     if (ini_int("megadrive", "enhancements", 0) && find_md_rom(g_md_path, sizeof g_md_path)) start_md_capture();
+
+    /* the game window first: the launcher (settings screen) is shown in it */
+    create_window();
+    g_have_metal = g_layer && mtl_init(g_layer, SHO_MAX_W > LC_IW ? SHO_MAX_W : LC_IW, SHO_H > LC_IH ? SHO_H : LC_IH);   /* big enough for the launcher picture */
+    if (!g_have_metal) {
+        NSAlert *al = [NSAlert new];
+        al.messageText = @"Metal is not available";
+        al.informativeText = @"Super Hang-On Ultimate needs a Mac with Metal graphics (any Mac from 2012 on, macOS 11 or later).";
+        [al runModal];
+        if (g_md_thread_on) pthread_join(g_md_thread, NULL);
+        return 1;
+    }
+    [NSApp activateIgnoringOtherApps:YES];
+    if (g_fullscreen) { g_fullscreen = 0; toggle_fullscreen(); }   /* g_fullscreen follows the window's notifications */
+
     if (show_launcher) {
         launcher_settings ls; memset(&ls, 0, sizeof ls);
+        static const char *const views[3] = { "FIT SCREEN", "16:9 WIDESCREEN", "4:3 ORIGINAL" };
+        ls.view_names = views; ls.view_count = 3; ls.view_desc = "CMD+1 / CMD+2 / CMD+3 SWITCH DURING PLAY";
         ls.demo_sounds = ini_int("game", "demo_sounds", 1);
         ls.difficulty = ini_int("game", "difficulty", 1) & 3;
         ls.time_adj = ini_int("game", "time", 1) & 3;
@@ -994,19 +1067,43 @@ static int run(int argc, char **argv) {
         ls.md_music = ini_int("megadrive", "music", 0) != 0;
         ls.game_dir = g_dir;
         {   /* how many arranged tracks are in the music folder */
-            static const char *titles[4] = { "Outride a Crisis", "Sprinter", "Winning Run", "Hard Road" };
             int found = 0; char mp[PATHN];
-            for (int i = 0; i < 4; i++) { char n[96]; snprintf(n, sizeof n, "music/%s.mp3", titles[i]); path_join(mp, g_dir, n);
+            for (int i = 0; i < 4; i++) { char n[96]; snprintf(n, sizeof n, "music/%s.mp3", sho_music_tracks[i].title); path_join(mp, g_dir, n);
                                           if (file_exists(mp)) found++; }
             if (found == 4) snprintf(ls.music_note, sizeof ls.music_note, "Arrange: all 4 tracks found in the music folder");
             else if (found) snprintf(ls.music_note, sizeof ls.music_note, "Arrange: %d of 4 tracks found (others play regular)", found);
             else snprintf(ls.music_note, sizeof ls.music_note, "Arrange tracks not found: regular music will play");
         }
         ls.md_check = md_rom_check;
+        NSString *pngpath = [[NSBundle mainBundle] pathForResource:@"launcher_bg" ofType:@"png"];   /* the launcher picture, in the app's Resources */
+        NSData *png = pngpath ? [NSData dataWithContentsOfFile:pngpath] : nil;
+        lc_begin(&ls, rom_check, png ? (const unsigned char *)png.bytes : NULL, png ? (size_t)png.length : 0);
+        lc_clock = now_s; lc_present_hook = present_loading;
         g_in_launcher = 1;
-        int go = launcher_run(&ls, rom_check);
-        g_in_launcher = 0;
-        if (!go || g_quit) { if (g_md_thread_on) pthread_join(g_md_thread, NULL); return 0; }   /* window closed: quit */
+        g_win.title = @"Super Hang-On Ultimate";
+        int pad_prev = 0;
+        while (g_running && !g_quit && lc_result() == LC_RUNNING) {
+            @autoreleasepool {
+                pump_events();
+                int b = launcher_pad_buttons(), e = b & ~pad_prev; pad_prev = b;
+                if (e & 1) lc_key(LK_UP);
+                if (e & 2) lc_key(LK_DOWN);
+                if (e & 4) lc_key(LK_LEFT);
+                if (e & 8) lc_key(LK_RIGHT);
+                if (e & 16) lc_key(LK_PAD_A);
+                if (e & 32) lc_key(LK_PAD_START);
+                if (lc_folder_clicked()) [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:g_dir] isDirectory:YES]];
+                lc_tick(now_s());
+                if (!present_launcher()) usleep(16000);   /* (hidden or minimised: no drawable to wait for) */
+            }
+        }
+        if (!g_running || g_quit || lc_result() != LC_PLAY) {   /* window closed, Cmd+Q or Esc: quit */
+            if (g_md_thread_on) pthread_join(g_md_thread, NULL);
+            lc_end(); g_in_launcher = 0;
+            if (g_win) { g_win.delegate = nil; [g_win orderOut:nil]; }
+            return 0;
+        }
+        lc_finish(&ls);
         ini_set_int("audio", "external_music", ls.arrange_music);
         ini_set_int("game", "demo_sounds", ls.demo_sounds);
         ini_set_int("game", "difficulty", ls.difficulty);
@@ -1015,6 +1112,14 @@ static int run(int argc, char **argv) {
         ini_set_int("megadrive", "enhancements", ls.md_enhancements);
         ini_set_int("megadrive", "controls", ls.md_controls);
         ini_set_int("megadrive", "music", ls.md_music);
+        if (ls.md_enhancements && !g_md_thread_on && find_md_rom(g_md_path, sizeof g_md_path)) start_md_capture();
+        {   /* the loading bar: which arranged MP3s will be decoded, and whether the Mega Drive capture is still running */
+            int have[4]; char mp[PATHN];
+            for (int i = 0; i < 4; i++) { char n[96]; snprintf(n, sizeof n, "music/%s.mp3", sho_music_tracks[i].title); path_join(mp, g_dir, n);
+                                          have[i] = ls.arrange_music && file_exists(mp); }
+            lc_load_begin(have, g_md_thread_on && !g_md_done);
+        }
+        lc_load_step(0, 0, "CHECKING THE ARCADE ROM");
     }
     char rmsg[256], detail[256];
     if (!rom_check(rmsg, sizeof rmsg, detail, sizeof detail)) {
@@ -1026,17 +1131,23 @@ static int run(int argc, char **argv) {
                               detail, g_rom_err, g_dir];
         [NSApp activateIgnoringOtherApps:YES];
         [al runModal];
+        if (g_in_launcher) { lc_end(); g_in_launcher = 0; }
         return 1;
     }
     if (ini_int("audio", "external_music", 1)) {
         char music_dir[PATHN], music_err[512];
         path_join(music_dir, g_dir, "music");
+        if (g_in_launcher) sho_music_load_progress = lc_music_progress;
         sho_load_music(music_dir, AUDIO_RATE, music_err, sizeof music_err);
+        sho_music_load_progress = NULL;
     }
     g_md_present = md_rom_present();   /* the Mega Drive options only apply with the Mega Drive ROM there */
     load_sound_levels();
     apply_sound_levels(0);
-    if (g_md_thread_on) { pthread_join(g_md_thread, NULL); g_md_thread_on = 0; }
+    if (g_md_thread_on) {   /* Original Mode's screens and courses from the Mega Drive ROM: usually ready by now */
+        while (!g_md_done) { if (g_in_launcher) lc_load_step(2, 0, "PREPARING ORIGINAL MODE"); usleep(5000); }
+        pthread_join(g_md_thread, NULL); g_md_thread_on = 0;
+    }
     else if (ini_int("megadrive", "enhancements", 0)) {   /* Original Mode graphics/courses from the Mega Drive ROM, before the arcade boots */
         char merr[256];
         if (find_md_rom(g_md_path, sizeof g_md_path)) mdgfx_capture(g_md_path, merr, sizeof merr);
@@ -1050,19 +1161,10 @@ static int run(int argc, char **argv) {
         sho_md_set_music(g_md_present && ini_int("megadrive", "enhancements", 0) && ini_int("megadrive", "music", 0));   /* the Mega Drive's own sound driver */
         if (sho_md_music_active()) sho_silence_music(); }                      /* the arcade's songs off: the Mega Drive's play instead */
 
-    create_window();
-    g_have_metal = g_layer && mtl_init(g_layer, SHO_MAX_W, SHO_H);
-    if (!g_have_metal) {
-        NSAlert *al = [NSAlert new];
-        al.messageText = @"Metal is not available";
-        al.informativeText = @"Super Hang-On Ultimate needs a Mac with Metal graphics (any Mac from 2012 on, macOS 11 or later).";
-        [al runModal];
-        return 1;
-    }
+    if (g_in_launcher) { lc_load_step(3, 1.0f, "STARTING THE GAME"); lc_present_hook = NULL; lc_end(); g_in_launcher = 0; }
+    memset(g_keys, 0, sizeof g_keys);
     update_view_width();
     update_title();
-    [NSApp activateIgnoringOtherApps:YES];
-    if (g_fullscreen) { g_fullscreen = 0; toggle_fullscreen(); }   /* g_fullscreen follows the window's notifications */
 
     /* keep the display awake and the app out of App Nap while it runs */
     id activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical | NSActivityIdleDisplaySleepDisabled

@@ -2,7 +2,7 @@
 
 ## What the MIT licence covers
 
-The `LICENSE` file (MIT, © 2026 chaotix359) covers this project's **own source code**: the Windows and macOS frontends,
+The `LICENSE` file (MIT, © 2026 chaotix359) covers this project's **own source code**: the Windows, macOS and Linux frontends (including the launcher's stand-in font),
 the game engine (`source/src/sho_*.c`, `rc_runtime.c`, `rc_ctx.c`, `ini_file.c`), the recompiler and tools in `source/recomp/`,
 `setup.py`, the build scripts, and the documentation.
 
@@ -12,8 +12,10 @@ It does **not** cover:
   with or endorsed by SEGA, and contains none of SEGA's ROMs or code. `setup.py` makes the translated program code on your
   own computer from your own ROM; that generated code (`source/src/gen/`, `source/recomp/overrides/`) is derived from SEGA's
   program, is not part of this repository, and is not licensed by this project.
-* **Programs you build.** A compiled `SuperHangOn.exe` / `SuperHangOn.app` contains that translated program code. It is for
+* **Programs you build.** A compiled `SuperHangOn.exe` / `SuperHangOn.app` / Linux `SuperHangOn` contains that translated program code. It is for
   your own use with your own ROMs; do not redistribute it.
+* **The launcher picture** (`source/res/launcher_bg.png`, made from the game's graphics and logo) shows SEGA's artwork.
+  It is built into the programs for your own use; keep it out of anything you publish.
 * **Third-party code** listed below, which keeps its own licence.
 
 ## Credits
@@ -33,6 +35,7 @@ Full licence texts are in `licenses/` (and, for some, next to the code).
 | Nuked-OPN2 (YM2612) | `source/src/third_party/nukedopn2/` | LGPL-2.1 – `licenses/Nuked-OPN2-LGPL-2.1.txt` | nukeykt |
 | puff (inflate) | `source/src/third_party/puff/` | zlib – `licenses/puff-zlib.txt` | Mark Adler |
 | dr_mp3 | `source/src/third_party/dr_mp3/` | MIT-0 – `licenses/dr_mp3-MIT0.txt` | David Reid |
+| SDL2 (Linux build only; the system's shared library, linked at build time and not stored here) | – | zlib – `licenses/SDL2-zlib.txt` | Sam Lantinga and the SDL contributors |
 | MinGW-w64 headers and import libraries (Windows build only; fetched by `source/toolchain/make_sysroot.sh`, not stored here) | – | BSD-style – `licenses/MinGW-w64-headers.txt` | MinGW-w64 project |
 
 ### Note on the LGPL components

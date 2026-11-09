@@ -284,7 +284,7 @@ static uint8_t z_in(z80 *z, uint8_t port) {
         /* The verified sound ROM's NMI handler receives eight bytes per packet.
            Only IN at 0x006c is a command; the other seven bytes are engine data. */
         if (z->pc == 0x006e) {
-            { extern void sho_md_route_sound(uint8_t); sho_md_route_sound(sound_latch); }   /* Original Mode filters songs and stops */
+            { extern uint8_t sho_md_route_sound(uint8_t); sound_latch = sho_md_route_sound(sound_latch); }   /* Original Mode filters songs and stops (and can put in its own) */
             if (getenv("SOUNDTRACE") && sound_latch != 0x80)
                 fprintf(stderr, "sound f%ld cmd=%02X external=%d\n", sho_frame_no, sound_latch, sho_music_current_track());
         }
@@ -474,6 +474,8 @@ void sho_debug_voices(void) {
 int sho_debug_mix = 0; /* 1 = YM only, 2 = PCM only */
 void sho_audio(int16_t *out, int count) {
     float gy = sho_debug_mix == 2 ? 0.0f : 0.30f, gp = sho_debug_mix == 1 ? 0.0f : 0.70f;
+    extern int sho_md_preview(void);
+    int pv = md_enabled ? sho_md_preview() : 0;   /* Original Mode's music select preview: 1 = the arcade's own song (FM, with its PCM drums), 2 = an arranged MP3 */
     /* sound levels: the FM chip carries the music (with the arranged soundtrack playing, only effects);
        the PCM chip the effects, voices and drums */
     gy *= (sho_music_current_track() >= 0 ? snd_sfx : snd_music) / 10.0f; gp *= snd_sfx / 10.0f;
@@ -484,10 +486,10 @@ void sho_audio(int16_t *out, int count) {
         float r = gy * lerp_at(ym_r, ym_n, py) + gp * lerp_at(pc_r, pc_n, pp);
         out[j * 2] = clamp16(l); out[j * 2 + 1] = clamp16(r);
     }
-    int amode = sho_md_audio_mode();
-    if (amode != 1) sho_music_mix(out, count);
-    if (md_enabled && md_mute()) memset(out, 0, (size_t)count * 4);
-    if (amode == 2 || (amode == 1 && !(md_enabled && md_mute()))) mdsnd_add(out, count, 48000, snd_music * 10);   /* the Mega Drive's sound driver */
+    int amode = sho_md_audio_mode(), mute = md_enabled && md_mute();
+    if (mute && pv != 1) memset(out, 0, (size_t)count * 4);
+    if (amode != 1 && (!mute || pv == 2)) sho_music_mix(out, count);
+    if (amode == 2 || (amode == 1 && !mute)) mdsnd_add(out, count, 48000, snd_music * 10);   /* the Mega Drive's sound driver */
 }
 
 void sho_reset(void) {
@@ -632,6 +634,8 @@ int sho_load_roms(const char *path, char *err, size_t errlen) {
     memset(M->workram, 0, sizeof M->workram);
     return 0;
 }
+
+const uint8_t *sho_text_font(void) { return M ? M->tiles : NULL; }   /* the text layer's 8x8 tiles (3 planes of 0x8000), after sho_load_roms */
 
 void sho_silence_music(void) {   /* the arcade's four songs off (the Mega Drive's play instead); the ROM archive is never changed */
     if (!M) return;

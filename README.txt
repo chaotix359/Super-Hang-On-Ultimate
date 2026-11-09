@@ -1,6 +1,41 @@
-SUPER HANG-ON ULTIMATE - NATIVE WINDOWS 11 BUILD   v0.9.26 alpha
+SUPER HANG-ON ULTIMATE - NATIVE WINDOWS 11 BUILD   v0.9.32 alpha
 Native Port + Mega Drive Original Mode Mod
 =========================================================
+
+THE LAUNCHER (SETTINGS SCREEN)
+- When the game starts, its settings appear inside the game window (fullscreen or not) over the Super Hang-On
+  Ultimate picture, in the arcade's own text font: Up/Down choose a line, Left/Right (or a mouse click) change it,
+  Enter or PLAY starts, Esc quits. A pad works too (d-pad, A, Start). Click the FOLDER line to open the game folder.
+  Underneath: whether shangon.zip and the Mega Drive ROM were found. After PLAY a loading bar shows what is being
+  got ready. Start with -play (or set [launcher] show=0 in shangon.ini) to skip it.
+
+WHAT'S NEW IN 0.9.32
+- Launcher: the loading bar now sits between the ROM lines and the folder line.
+
+WHAT'S NEW IN 0.9.31
+- Launcher: the settings panel sits flush in the bottom-left corner, without the yellow line down its left edge.
+
+WHAT'S NEW IN 0.9.30
+- Windows and Mac: the separate launcher window is gone; the launcher is now the same in-window settings screen as
+  on Linux (new picture, arcade font, loading bar after PLAY), in all three versions.
+- The version number is shown at the bottom right of the launcher, under the bike.
+
+WHAT'S NEW IN 0.9.29
+- Linux: after PLAY the launcher stays up with a loading bar at the bottom, with what is happening written in it
+  (checking the arcade ROM, loading each arranged song, preparing Original Mode, starting the game).
+
+WHAT'S NEW IN 0.9.28
+- The launcher has its artwork back on the left: the original Super Hang-On arcade flyer (Windows and Mac).
+- Linux: the launcher now shows the Super Hang-On Ultimate picture behind it, with the settings in the arcade's own
+  text font (the one used for the scores and the race HUD) at the bottom left, under the logo.
+
+WHAT'S NEW IN 0.9.27
+- Apply Mega Drive Controls now decides the steering in both modes. Ticked: the Mega Drive's handlebar steering in
+  Arcade Mode and Original Mode (as before). Not ticked: the arcade's own steering in both - Original Mode used to
+  keep the Mega Drive steering regardless. (The FRAME part changes the steering only with the option ticked.)
+- Original Mode music follows the Music choice in the launcher on the music select screen and in the race:
+  Regular Soundtrack previews and plays the arcade's songs, Arrange Soundtrack the MP3s, Mega Drive Music the
+  Mega Drive's. The Original Mode title, menus, garage and results screens keep the Mega Drive's own music.
 
 WHAT'S NEW IN 0.9.26
 - The project is now called Super Hang-On Ultimate. The launcher has no artwork any more: it shows the new name and the
@@ -346,7 +381,8 @@ arcade original, as before.
     replaces TIME, the "R" bar shows the rival's pace, and at each checkpoint you see the gap.
     Hold Back (View) for 1.5 seconds to retire.
   - Parts change the bike: the FRAME sets the steering inertia (lighter frames turn in and
-    counter-steer faster, using the Mega Drive's own handlebar rates); ENGINE sets power and top speed
+    counter-steer faster, using the Mega Drive's own handlebar rates; with Apply Mega Drive Controls
+    ticked); ENGINE sets power and top speed
     (only turbo engines reach the arcade's 324 km/h and use the supercharger); MUFFLER and OIL add
     power; BRAKE sets braking; TIRE sets grip in corners.
   - Parts wear in races (crashes wear the tires and frame). Worn parts perform worse. The MECHANIC
@@ -360,7 +396,8 @@ arcade original, as before.
 * Apply Mega Drive Controls - steering behaves like the Mega Drive version: the stick drives a
   virtual handlebar that turns in, counter-steers and re-centres at set rates (a little quicker at
   speed), with full lock at full stick travel. Makes analogue sticks much easier to use. Works in
-  the arcade game too (using the Mega Drive Arcade Mode handling) as well as in Original Mode.
+  the arcade game too (using the Mega Drive Arcade Mode handling) as well as in Original Mode (using
+  the handling of your frame part). Not ticked, both modes steer like the arcade machine.
 
 Prototype notes: the rivals after Mia Ferraru, their lap times, prize money and the part effect
 strengths are first-pass values for testing and will be tuned. Original Mode needs cpu=recompiled

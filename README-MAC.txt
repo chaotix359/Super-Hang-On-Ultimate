@@ -1,8 +1,8 @@
-SUPER HANG-ON ULTIMATE - NATIVE macOS BUILD   v0.9.26 alpha (Mac 2)
+SUPER HANG-ON ULTIMATE - NATIVE macOS BUILD   v0.9.32 alpha (Mac 8)
 Native Port + Mega Drive Original Mode Mod
 ====================================================================
 
-The same game as the Windows v0.9.26 alpha (recompiled C, Original Mode, Mega Drive options, arranged
+The same game as the Windows v0.9.32 alpha (recompiled C, Original Mode, Mega Drive options, arranged
 soundtrack), for macOS 11 Big Sur or later on Apple Silicon and Intel Macs.
 
 WHAT'S NEW IN MAC 2
@@ -44,7 +44,7 @@ SETUP
 1. Put SuperHangOn.app in a folder of its own, together with your MAME ROM set "shangon.zip"
    (Super Hang-On sitdown/upright, unprotected - MAME 'shangon'). This is the game folder: the Mega Drive ROM,
    the music folder, shangon.ini, shangon.nv (high scores) and the Original Mode saves live here too, exactly
-   as next to SuperHangOn.exe on Windows. The launcher's "Open game folder" link opens it in Finder.
+   as next to SuperHangOn.exe on Windows. Click the FOLDER line on the launcher to open it in Finder.
 2. Double-click SuperHangOn.app. If macOS asks whether the app may use files in your Documents (or Desktop /
    Downloads) folder, click Allow - that is the game folder being read.
    An app you built yourself opens normally. A copy someone else built may be stopped by Gatekeeper the first
@@ -113,7 +113,9 @@ KNOWN LIMITS (Mac 2)
 --------------------
 * HID pads number their buttons and the default numbers are a guess at the common GameSir / 8BitDo layout. If a
   button does the wrong thing, see [pad] map= above.
-* The settings launcher is keyboard/mouse only, and appears every time unless [launcher] show=0 (as on Windows).
+* The launcher is the in-window settings screen (as on Windows and Linux); it appears every time unless
+  [launcher] show=0. Keyboard, mouse or pad. The Display menu items are greyed out while it is up (F11 / Ctrl+Cmd+F
+  still switch fullscreen).
 * The universal (Apple Silicon + Intel) app has only been run on Apple Silicon so far.
 
 CREDITS / LICENCES (see licenses folder)

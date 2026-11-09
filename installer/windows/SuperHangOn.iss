@@ -3,7 +3,7 @@
 ; On the user's PC it asks for the arcade ROM, builds the game from it, and installs the result.
 
 #ifndef AppVersion
-  #define AppVersion "0.9.26"
+  #define AppVersion "0.9.32"
 #endif
 #ifndef StageDir
   #define StageDir "stage"

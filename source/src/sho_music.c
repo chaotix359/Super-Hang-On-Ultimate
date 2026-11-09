@@ -37,6 +37,35 @@ unsigned sho_music_mask(void) {
     for (int i = 0; i < 4; i++) if (tracks[i].pcm) mask |= 1u << i;
     return mask;
 }
+/* Decodes a whole MP3 in pieces (the same result as drmp3_open_file_and_read_pcm_frames_s16), telling
+   sho_music_load_progress how far through the file it is. */
+void (*sho_music_load_progress)(int track, float fraction);
+static drmp3_int16 *decode_file(const char *path, int track, drmp3_config *fmt, drmp3_uint64 *frames) {
+    long size = 0;
+    { FILE *f = fopen(path, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); size = ftell(f); fclose(f); }
+    drmp3 mp3;
+    if (!drmp3_init_file(&mp3, path, NULL)) return NULL;
+    drmp3_uint64 n = 0, cap = 0; drmp3_int16 *out = NULL;
+    for (;;) {
+        enum { CHUNK = 65536 };
+        if (n + CHUNK > cap) {
+            drmp3_uint64 nc = cap ? cap * 2 : CHUNK * 16;
+            drmp3_int16 *b = (drmp3_int16 *)realloc(out, (size_t)nc * mp3.channels * sizeof *out);
+            if (!b) { free(out); drmp3_uninit(&mp3); return NULL; }
+            out = b; cap = nc;
+        }
+        drmp3_uint64 got = drmp3_read_pcm_frames_s16(&mp3, CHUNK, out + n * mp3.channels);
+        n += got;
+        if (sho_music_load_progress && size > 0) sho_music_load_progress(track, (float)mp3.streamCursor / (float)size);
+        if (got < CHUNK) break;
+    }
+    fmt->channels = mp3.channels; fmt->sampleRate = mp3.sampleRate;
+    drmp3_uninit(&mp3);
+    if (!n) { free(out); return NULL; }
+    *frames = n;
+    return out;   /* (freed with drmp3_free, which uses free()) */
+}
+
 int sho_music_load_files(const char *directory, unsigned sample_rate, char *err, size_t errlen) {
     sho_music_unload();
     if (errlen) err[0] = 0;
@@ -48,7 +77,7 @@ int sho_music_load_files(const char *directory, unsigned sample_rate, char *err,
         int n = snprintf(path, sizeof path, "%s/%s.mp3", directory, sho_music_tracks[i].title);
         if (n < 0 || (size_t)n >= sizeof path) continue;
         music_track *t = &tracks[i];
-        t->pcm = drmp3_open_file_and_read_pcm_frames_s16(path, &t->format, &t->frames, NULL);
+        t->pcm = decode_file(path, i, &t->format, &t->frames);
         if (!t->pcm || t->frames < 2 || !t->format.sampleRate || t->format.channels < 1 || t->format.channels > 2) {
             drmp3_free(t->pcm, NULL); memset(t, 0, sizeof *t);
             if (errlen) { size_t len = strlen(err); if (len < errlen) snprintf(err + len, errlen - len, "%s%s", len ? ", " : "Original music used for: ", sho_music_tracks[i].title); }

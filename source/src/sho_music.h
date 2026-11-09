@@ -11,6 +11,7 @@ typedef struct {
 } sho_music_info;
 extern const sho_music_info sho_music_tracks[4];
 
+extern void (*sho_music_load_progress)(int track, float fraction);   /* optional: called while each MP3 decodes */
 int sho_music_load_files(const char *directory, unsigned sample_rate, char *err, size_t errlen);
 void sho_music_unload(void);
 unsigned sho_music_mask(void);

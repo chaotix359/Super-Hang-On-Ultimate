@@ -138,13 +138,18 @@ int d3d_present(const uint32_t *fb, int src_w, int src_h, double aspect, int fil
     if (rc.right != bb_w || rc.bottom != bb_h) d3d_resize();
     /* upload with one duplicated column on the right so filtering never reads stale texels */
     static uint32_t padded[1024 * 256];
-    int up_w = src_w < tex_w ? src_w + 1 : src_w;
-    for (int y = 0; y < src_h; y++) {
-        memcpy(padded + y * up_w, fb + y * src_w, (size_t)src_w * 4);
-        if (up_w > src_w) padded[y * up_w + src_w] = fb[y * src_w + src_w - 1];
+    if (src_w > tex_w || src_h > tex_h) return 0;
+    int up_w = src_w < tex_w && (src_w + 1) * src_h <= 1024 * 256 ? src_w + 1 : src_w;   /* (the launcher's full-size picture goes up as it is) */
+    const uint32_t *up = fb;
+    if (up_w > src_w) {
+        for (int y = 0; y < src_h; y++) {
+            memcpy(padded + y * up_w, fb + y * src_w, (size_t)src_w * 4);
+            padded[y * up_w + src_w] = fb[y * src_w + src_w - 1];
+        }
+        up = padded;
     }
     D3D11_BOX box = { 0, 0, 0, (UINT)up_w, (UINT)src_h, 1 };
-    ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)tex, 0, &box, padded, (UINT)up_w * 4, 0);
+    ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)tex, 0, &box, up, (UINT)up_w * 4, 0);
 
     /* letterbox to the requested display aspect */
     float vw = (float)bb_w, vh = (float)bb_h, x = 0, y = 0;

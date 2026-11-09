@@ -1,5 +1,6 @@
 1 ICON "res/shangon.ico"
 1 24 "res/app.manifest"
+3 RCDATA "res/launcher_bg.png"
 1 VERSIONINFO
 FILEVERSION 0,4,0,0
 PRODUCTVERSION 0,4,0,0

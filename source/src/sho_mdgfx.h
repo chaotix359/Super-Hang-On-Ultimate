@@ -54,6 +54,7 @@ extern mdscene_t *mdscene[MD_NRACES];  /* per Original Mode race (NULL if not ca
 
 /* path: Mega Drive ROM (.md/.bin/.gen) or a .zip containing it. Returns 1 on success. */
 int mdgfx_capture(const char *path, char *err, size_t errlen);
+extern volatile int mdgfx_progress;   /* 0..100 while mdgfx_capture runs */
 /* just check the file (for the launcher): 1 = the right ROM */
 int mdgfx_check(const char *path, char *msg, size_t msglen);
 

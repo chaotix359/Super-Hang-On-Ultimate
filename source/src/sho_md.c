@@ -61,6 +61,9 @@ static uint8_t hiscore_backup[0x1c0]; static int hiscore_saved;
 /* the Mega Drive sound driver is only kept running while something needs it: the Mega Drive Music option, or the
    live Mega Drive screens. Leaving Original Mode stops the music; without the option the driver is shut down. */
 static int cfg_music;
+static int pv_mode, pv_q[4], pv_qn;   /* music select preview playing: 0 none, 1 arcade FM, 2 arrangement; arcade commands to deliver (see md_command_hook) */
+static void pv_send(int c) { if (pv_qn < 4) pv_q[pv_qn++] = c; }
+static void preview_stop(void); static unsigned md_command_hook(unsigned v);
 static void md_sound_release(void) {
     if (!mdsnd_ready()) return;
     if (cfg_music) mdsnd_command(0xb0); else mdsnd_shutdown();
@@ -185,6 +188,7 @@ void sho_md_configure(int enhancements, int controls) {
     cfg_enh = enhancements != 0; cfg_ctl = controls != 0;
     md_enabled = cfg_enh || cfg_ctl;
     sho_md_before_reset(); md_live = 0; live_resolve = 0; mdlive_stop(); finish_t = 0; broken_part = -1;
+    mdsnd_command_hook = md_command_hook; if (pv_mode == 2) sho_music_stop(); pv_mode = 0; pv_qn = 0;
     phase = PH_ARCADE; md_grip_q8 = 256; hb = 0; md_pot = 0x80; md_pot_tick = 0; arcade_ok = 0; arcade_pass = 0; select_prev = 0; arc_t = 0;
 }
 /* ---- Mega Drive music ----
@@ -322,6 +326,7 @@ static void begin_race_r(int course, int r) {
         if (mdcourse_info(r, &ci) && mdcourse_install(r)) { md_race = r; md_laps = ci.laps; launch_class = 2; }   /* Senior: enough stages for any lap count */
     }
     if (md_live && mdsnd_ready()) mdsnd_command(0xb0);   /* the Mega Drive screens' music ends with the race set-up */
+    preview_stop();
     racing = 0; race_done = 0; race_retired = 0; race_frames = 0; crashes = 0; brake_frames = 0; back_held = 0;
     gap_timer = 0; stage_prev = 1;
     memcpy(hiscore_backup, M->workram + 0x6400, sizeof hiscore_backup); hiscore_saved = 1;
@@ -385,8 +390,10 @@ int md_test_direct_steer;   /* test harness only: bypass the handlebar (the scri
    every 3 frames, which is what makes the bike straighten up so gradually. Its value is then read like
    the arcade's: dead zone, (v-$80)*256/$8C; the arcade divides by $90, so the potentiometer is scaled. */
 int md_steer_adc(float s, int *adc) {
+    /* only with "Apply Mega Drive Controls": without it both modes steer like the arcade (and the frame part
+       then has nothing to change) */
+    if (md_test_direct_steer || !cfg_ctl) return 0;
     int orig = in_original_race();
-    if (md_test_direct_steer || (!cfg_ctl && !orig)) return 0;
     int row = orig ? pf.part[P_FRAME] : 6;
     if (row < 0 || row > 6) row = 6;
     if (++md_pot_tick >= 3) {
@@ -853,7 +860,7 @@ static void live_step(void) {
             live_rival = (m * 6000 + sec * 100 + h) * SHO_FPS / 100; }
         if (getenv("LIVEDBG")) { fprintf(stderr, "race %d music %d rival %ld parts", r, live_music, live_rival); for (int i = 0; i < NPART; i++) fprintf(stderr, " %d/%d", (int)mdlive_r16(0xb618 + i * 2), (int16_t)mdlive_r16(0xb648 + i * 2)); fprintf(stderr, "\n"); }
         begin_race_r(r / 2 > 3 ? 3 : r / 2, r);
-    } else if (st < 0x08 && live_prev_state >= 0x08) { mdlive_stop(); md_live = 0; phase = PH_ARCADE; reset_request = 1; md_sound_release(); }   /* END: back to the title screen */
+    } else if (st < 0x08 && live_prev_state >= 0x08) { preview_stop(); mdlive_stop(); md_live = 0; phase = PH_ARCADE; reset_request = 1; md_sound_release(); }   /* END: back to the title screen */
     live_prev_state = st;
 }
 
@@ -872,13 +879,41 @@ int sho_md_hold_music(void) { return cfg_enh && (phase == PH_RACE || phase == PH
 static int snd_pending = -1; static long snd_pending_f;
 static int is_track_cmd(uint8_t c) { return c == 0x9d || c == 0x82 || c == 0x96 || c == 0x81; }
 static int is_stop_cmd(uint8_t c) { return c == 0x00 || c == 0x83 || c == 0x8e || c == 0x92 || c == 0x9e || c == 0x9f; }
-void sho_md_route_sound(uint8_t cmd) {
+/* The live Mega Drive's music select previews the four race songs (its table at $7E2A: $82 Outride a Crisis,
+   $84 Sprinter, $83 Winning Run, $85 Hard Road, in the arcade's order). Unless the Mega Drive Music option is on,
+   the preview is played in the chosen soundtrack instead: the arranged MP3, or the arcade's own FM song (the
+   arcade's sound CPU is given the song command in place of its own; its other sounds are held back meanwhile).
+   The Mega Drive is told to stop instead ($B1), and stops the preview itself when it leaves the screen ($B0). */
+static void preview_stop(void) {
+    if (pv_mode == 2) sho_music_stop();
+    if (pv_mode == 1) pv_send(0x00);   /* the arcade's sound CPU: music off */
+    pv_mode = 0;
+}
+int sho_md_preview(void) { return pv_mode; }
+static unsigned md_command_hook(unsigned v) {
+    if (!(cfg_enh && md_live && phase == PH_MDLIVE) || live_resolve) { if (pv_mode) preview_stop(); return v; }   /* (resolving: its own race, unheard) */
+    if (v >= 0x82 && v <= 0x85 && !cfg_music) {
+        static const uint8_t arc[4] = { 0x9d, 0x96, 0x82, 0x81 };   /* $82.. -> the arcade's song commands */
+        uint8_t c = arc[v - 0x82];
+        if (pv_mode == 2) sho_music_stop();
+        sho_music_on_command(c);
+        if (sho_music_current_track() >= 0) pv_mode = 2;          /* the arrangement has this song */
+        else { pv_mode = 1; pv_send(c); }
+        return 0xb1;                                                 /* the Mega Drive's music stops at once, as a new song would cut it */
+    }
+    if (pv_mode && ((v >= 0x81 && v <= 0x8a) || v == 0xb0 || v == 0xb1)) preview_stop();   /* another song, or a stop */
+    return v;
+}
+uint8_t sho_md_route_sound(uint8_t cmd) {
+    if (pv_qn) { uint8_t c = (uint8_t)pv_q[0]; pv_qn--; memmove(pv_q, pv_q + 1, sizeof pv_q[0] * (size_t)pv_qn); return c; }
+    if (pv_mode == 1) return 0x80;                                 /* the preview has the sound CPU to itself */
     if (sho_md_hold_music()) {
-        if (is_stop_cmd(cmd)) return;                                  /* the song plays through the race */
-        if (is_track_cmd(cmd) && !racing) { snd_pending = cmd; snd_pending_f = sho_frame_no; return; }   /* preview: held */
+        if (is_stop_cmd(cmd)) return cmd;                              /* the song plays through the race */
+        if (is_track_cmd(cmd) && !racing) { snd_pending = cmd; snd_pending_f = sho_frame_no; return cmd; }   /* preview: held */
         if (is_track_cmd(cmd)) snd_pending = -1;
     }
     sho_md_music_command(cmd); sho_music_on_command(cmd);
+    return cmd;
 }
 static void route_race_start(void) {   /* the race is running: its own song command, or the held one */
     if (snd_pending < 0) return;

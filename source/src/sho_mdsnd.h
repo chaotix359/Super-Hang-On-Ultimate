@@ -13,6 +13,7 @@ uint8_t mdsnd_zread(unsigned a);
 void mdsnd_zreset(int running);                    /* Z80 reset line: 0 = held, 1 = released */
 void mdsnd_set_follow(int on);                     /* 1 = a live Mega Drive is driving the Z80 */
 void mdsnd_add(int16_t *out, int frames, unsigned rate, int gain_percent);   /* add stereo samples to out */
+extern unsigned (*mdsnd_command_hook)(unsigned cmd);   /* if set: sees each sound command the Mega Drive's program sends and returns the one to deliver */
 extern int mdsnd_log;                              /* debug: log mailbox writes */
 unsigned mdsnd_last_command(void);
 unsigned mdsnd_last_music(void);                   /* the last song command ($81-$85), 0 after a stop */

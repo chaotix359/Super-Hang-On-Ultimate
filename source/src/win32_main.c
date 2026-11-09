@@ -17,7 +17,7 @@
 #include <math.h>
 #include "sho_core.h"
 #include "win32_d3d11.h"
-#include "win32_launcher.h"
+#include "launcher_core.h"
 #include "sho_music.h"
 #include "sho_md.h"
 #include "sho_mdgfx.h"
@@ -29,7 +29,7 @@ extern int sho_recomp;
 #define AUDIO_TARGET 3200            /* samples queued ahead (~67 ms) */
 
 static HWND g_hwnd;
-static int g_md_present, g_pause_menu;
+static int g_md_present, g_pause_menu, g_in_launcher;   /* g_in_launcher: the settings screen is in the window */
 static void reset_to_title(void);
 static void apply_sound_levels(int save);
 static int g_fullscreen = 1, g_running = 1, g_paused = 0, g_filter = 2, g_stretch = 0, g_wide = 1, g_vrr = 0, g_use_d3d = 0;
@@ -164,6 +164,40 @@ static void present_gdi(HDC dc) {
     StretchDIBits(dc, x, y, w, h, 0, 0, sho_width(), SHO_H, sho_framebuffer(), &g_bmi, DIB_RGB_COLORS, SRCCOPY);
 }
 
+/* the launcher (settings screen, loading bar): its 1920x1080 picture, 16:9 with black bars */
+static void present_launcher_gdi(HDC dc) {
+    RECT rc; GetClientRect(g_hwnd, &rc);
+    int x, y, w, h; lc_view_rect(rc.right, rc.bottom, &x, &y, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    if (x > 0) { RECT l = { 0, 0, x, rc.bottom }, r = { x + w, 0, rc.right, rc.bottom }; FillRect(dc, &l, black); FillRect(dc, &r, black); }
+    if (y > 0) { RECT t = { 0, 0, rc.right, y }, b = { 0, y + h, rc.right, rc.bottom }; FillRect(dc, &t, black); FillRect(dc, &b, black); }
+    const uint32_t *img = lc_image(); if (!img) return;
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = LC_IW; bi.bmiHeader.biHeight = -LC_IH;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    SetStretchBltMode(dc, HALFTONE); SetBrushOrgEx(dc, 0, 0, NULL);
+    StretchDIBits(dc, x, y, w, h, 0, 0, LC_IW, LC_IH, img, &bi, DIB_RGB_COLORS, SRCCOPY);
+}
+static void present_launcher(void) {
+    if (g_use_d3d) {
+        const uint32_t *img = lc_image();
+        int r = img ? d3d_present(img, LC_IW, LC_IH, 16.0 / 9.0, 2, 1, 0) : 1;   /* sharp-bilinear: crisp letters at any size */
+        if (r == 0) { g_use_d3d = 0; d3d_shutdown(); }
+        else { if (r == 2) Sleep(16); return; }
+    }
+    HDC dc = GetDC(g_hwnd); present_launcher_gdi(dc); ReleaseDC(g_hwnd, dc);
+    Sleep(16);
+}
+static void pump_messages(void) {
+    MSG msg;
+    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) { g_running = 0; break; }
+        TranslateMessage(&msg); DispatchMessageA(&msg);
+    }
+}
+static void present_loading(void) { pump_messages(); present_launcher(); }   /* lc_load_step: the loading bar */
+
 static int present(int sync_interval) {     /* returns 1 if the present waited for vblank */
     if (g_use_d3d) {
         int r = d3d_present(sho_framebuffer(), sho_width(), SHO_H, image_aspect(), g_filter, sync_interval, g_vrr);
@@ -198,6 +232,19 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         break;   /* everything else (incl. Alt+F4) goes to DefWindowProc */
     case WM_SYSCHAR: if (w == VK_RETURN) return 0; break;
     case WM_KEYDOWN:
+        if (g_in_launcher) {   /* the settings screen: arrows, Enter, Space, Esc; F11 still switches fullscreen */
+            if (w == VK_F11 && !(l & (1 << 30))) set_fullscreen(!g_fullscreen);
+            switch (w) {
+            case VK_UP: lc_key(LK_UP); break;
+            case VK_DOWN: lc_key(LK_DOWN); break;
+            case VK_LEFT: lc_key(LK_LEFT); break;
+            case VK_RIGHT: lc_key(LK_RIGHT); break;
+            case VK_RETURN: if (!(l & (1 << 30))) lc_key(LK_ENTER); break;
+            case VK_SPACE: if (!(l & (1 << 30))) lc_key(LK_SPACE); break;
+            case VK_ESCAPE: if (!(l & (1 << 30))) lc_key(LK_ESC); break;
+            }
+            return 0;
+        }
         if (w < 256) g_keys[w] = 1;
         if (l & (1 << 30)) return 0;   /* auto-repeat */
         if (w == VK_F11) set_fullscreen(!g_fullscreen);
@@ -216,7 +263,14 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_KEYUP: if (w < 256) g_keys[w] = 0; return 0;
     case WM_KILLFOCUS: memset(g_keys, 0, sizeof g_keys); return 0;
     case WM_SIZE: if (g_use_d3d) d3d_resize(); return 0;
-    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); if (!g_use_d3d) present_gdi(dc); EndPaint(h, &ps); return 0; }
+    case WM_LBUTTONDOWN:
+        if (g_in_launcher) {
+            RECT rc; GetClientRect(h, &rc); int cx, cy;
+            lc_to_canvas(rc.right, rc.bottom, (short)LOWORD(l), (short)HIWORD(l), &cx, &cy);
+            lc_click(cx, cy);
+        }
+        return 0;
+    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); if (!g_use_d3d) { if (g_in_launcher) present_launcher_gdi(dc); else present_gdi(dc); } EndPaint(h, &ps); return 0; }
     case WM_ERASEBKGND: return 1;
     case WM_SETCURSOR: if (g_fullscreen && LOWORD(l) == HTCLIENT) { SetCursor(NULL); return TRUE; } break;
     }
@@ -478,70 +532,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         if (g_cmd_rom[0] == '"') memmove(g_cmd_rom, g_cmd_rom + 1, strlen(g_cmd_rom));
     }
     int show_launcher = ini_int("launcher", "show", 1) && !strstr(cmd, "-play");
-    if (show_launcher) {
-        launcher_settings ls;
-        ls.demo_sounds = ini_int("game", "demo_sounds", 1);
-        ls.difficulty = ini_int("game", "difficulty", 1) & 3;
-        ls.time_adj = ini_int("game", "time", 1) & 3;
-        ls.widescreen = g_wide;
-        ls.arrange_music = ini_int("audio", "external_music", 1) != 0;
-        ls.md_enhancements = ini_int("megadrive", "enhancements", 0) != 0;
-        ls.md_controls = ini_int("megadrive", "controls", 0) != 0;
-        ls.md_music = ini_int("megadrive", "music", 0) != 0;
-        {   /* how many arranged tracks are in the music folder */
-            static const char *titles[4] = { "Outride a Crisis", "Sprinter", "Winning Run", "Hard Road" };
-            int found = 0; char mp[MAX_PATH];
-            for (int i = 0; i < 4; i++) { char n[96]; snprintf(n, sizeof n, "music\\%s.mp3", titles[i]); path_join(mp, g_dir, n);
-                                          if (GetFileAttributesA(mp) != INVALID_FILE_ATTRIBUTES) found++; }
-            if (found == 4) snprintf(ls.music_note, sizeof ls.music_note, "Arrange: all 4 tracks found in the music folder");
-            else if (found) snprintf(ls.music_note, sizeof ls.music_note, "Arrange: %d of 4 tracks found (others play regular)", found);
-            else snprintf(ls.music_note, sizeof ls.music_note, "Arrange tracks not found: regular music will play");
-        }
-        ls.md_check = md_rom_check;
-        if (ini_int("megadrive", "enhancements", 0) && find_md_rom(g_md_path, sizeof g_md_path))
-            g_md_thread = CreateThread(NULL, 0, md_capture_thread, NULL, 0, NULL);
-        if (!launcher_run(inst, &ls, rom_check)) return 0;          /* window closed: quit */
-        ini_set_int("audio", "external_music", ls.arrange_music);
-        ini_set_int("game", "demo_sounds", ls.demo_sounds);
-        ini_set_int("game", "difficulty", ls.difficulty);
-        ini_set_int("game", "time", ls.time_adj);
-        ini_set_int("video", "widescreen", ls.widescreen);
-        ini_set_int("megadrive", "enhancements", ls.md_enhancements);
-        ini_set_int("megadrive", "controls", ls.md_controls);
-        ini_set_int("megadrive", "music", ls.md_music);
-        g_wide = ls.widescreen;
-    }
-    char rmsg[256], detail[256];
-    if (!rom_check(rmsg, sizeof rmsg, detail, sizeof detail)) {
-        char box[3072];
-        snprintf(box, sizeof box, "%s\n%s\n\n%s\n\nPut your MAME 'shangon.zip' (Super Hang-On, sitdown/upright, unprotected) next to SuperHangOn.exe.",
-                 rmsg, detail, g_rom_err);
-        MessageBoxA(NULL, box, "Super Hang-On Ultimate", MB_ICONERROR);
-        return 1;
-    }
-    if (ini_int("audio", "external_music", 1)) {
-        char music_dir[MAX_PATH], music_err[512];
-        path_join(music_dir, g_dir, "music");
-        sho_load_music(music_dir, AUDIO_RATE, music_err, sizeof music_err);
-    }
-    g_md_present = md_rom_present();   /* the Mega Drive options only apply with the Mega Drive ROM there */
-    load_sound_levels();
-    apply_sound_levels(0);
-    if (g_md_thread) { WaitForSingleObject(g_md_thread, INFINITE); CloseHandle(g_md_thread); g_md_thread = NULL; }
-    else if (ini_int("megadrive", "enhancements", 0)) {   /* Original Mode graphics/courses from the Mega Drive ROM, before the arcade boots */
-        char merr[256];
-        if (find_md_rom(g_md_path, sizeof g_md_path)) mdgfx_capture(g_md_path, merr, sizeof merr);
-    }
-    sho_reset();
-    load_nvram();
-    apply_game_settings();
-    {   char sav[MAX_PATH]; path_join(sav, g_dir, "shangon_original.sav"); sho_md_set_save_path(sav);
-        sho_md_configure(g_md_present && ini_int("megadrive", "enhancements", 0), g_md_present && ini_int("megadrive", "controls", 0));
-        sho_md_dev_race(ini_int("dev", "original_race", 0));
-        sho_md_set_music(g_md_present && ini_int("megadrive", "enhancements", 0) && ini_int("megadrive", "music", 0));   /* the Mega Drive's own sound driver */
-        if (sho_md_music_active()) sho_silence_music(); }                      /* the arcade's songs off: the Mega Drive's play instead */
     load_xinput();
 
+    /* the game window first: the launcher (settings screen) is shown in it */
     WNDCLASSA wc; memset(&wc, 0, sizeof wc);
     wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = wndproc; wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.hIcon = LoadIconA(inst, MAKEINTRESOURCEA(1));
@@ -556,9 +549,134 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     memset(&g_bmi, 0, sizeof g_bmi);
     g_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); g_bmi.bmiHeader.biWidth = SHO_W; g_bmi.bmiHeader.biHeight = -SHO_H;
     g_bmi.bmiHeader.biPlanes = 1; g_bmi.bmiHeader.biBitCount = 32; g_bmi.bmiHeader.biCompression = BI_RGB;
-    g_use_d3d = want_d3d && d3d_init(g_hwnd, SHO_MAX_W, SHO_H);
+    g_use_d3d = want_d3d && d3d_init(g_hwnd, LC_IW > SHO_MAX_W ? LC_IW : SHO_MAX_W, LC_IH > SHO_H ? LC_IH : SHO_H);   /* big enough for the launcher picture */
     if (g_vrr && !(g_use_d3d && d3d_tearing_supported())) g_vrr = 0;
+
+    if (show_launcher) {
+        launcher_settings ls; memset(&ls, 0, sizeof ls);
+        static const char *const views[2] = { "16:9 WIDESCREEN", "4:3 ORIGINAL" };
+        ls.view_names = views; ls.view_count = 2; ls.view_desc = "F9 SWITCHES DURING PLAY";
+        ls.demo_sounds = ini_int("game", "demo_sounds", 1);
+        ls.difficulty = ini_int("game", "difficulty", 1) & 3;
+        ls.time_adj = ini_int("game", "time", 1) & 3;
+        ls.view = g_wide ? 0 : 1;
+        ls.arrange_music = ini_int("audio", "external_music", 1) != 0;
+        ls.md_enhancements = ini_int("megadrive", "enhancements", 0) != 0;
+        ls.md_controls = ini_int("megadrive", "controls", 0) != 0;
+        ls.md_music = ini_int("megadrive", "music", 0) != 0;
+        ls.game_dir = g_dir;
+        {   /* how many arranged tracks are in the music folder */
+            int found = 0; char mp[MAX_PATH];
+            for (int i = 0; i < 4; i++) { char n[96]; snprintf(n, sizeof n, "music\\%s.mp3", sho_music_tracks[i].title); path_join(mp, g_dir, n);
+                                          if (GetFileAttributesA(mp) != INVALID_FILE_ATTRIBUTES) found++; }
+            if (found == 4) snprintf(ls.music_note, sizeof ls.music_note, "Arrange: all 4 tracks found in the music folder");
+            else if (found) snprintf(ls.music_note, sizeof ls.music_note, "Arrange: %d of 4 tracks found (others play regular)", found);
+            else snprintf(ls.music_note, sizeof ls.music_note, "Arrange tracks not found: regular music will play");
+        }
+        ls.md_check = md_rom_check;
+        if (ini_int("megadrive", "enhancements", 0) && find_md_rom(g_md_path, sizeof g_md_path))
+            g_md_thread = CreateThread(NULL, 0, md_capture_thread, NULL, 0, NULL);
+        {   /* the launcher picture: res/launcher_bg.png, resource 3 */
+            const unsigned char *png = NULL; size_t png_len = 0;
+            HRSRC rs = FindResourceA(inst, MAKEINTRESOURCEA(3), MAKEINTRESOURCEA(10));   /* RT_RCDATA */
+            HGLOBAL rg = rs ? LoadResource(inst, rs) : NULL;
+            if (rg) { png = (const unsigned char *)LockResource(rg); png_len = SizeofResource(inst, rs); }
+            lc_begin(&ls, rom_check, png, png_len);
+        }
+        lc_clock = now_s; lc_present_hook = present_loading;
+        g_in_launcher = 1;
+        WORD pad_prev = 0;
+        while (g_running && lc_result() == LC_RUNNING) {
+            pump_messages();
+            if (pXInputGetState) {   /* a pad: d-pad, A, Start (pads that aren't there are asked again every 2 s) */
+                WORD b = 0;
+                for (DWORD i = 0; i < 4; i++) {
+                    if (g_pad_poll_cooldown[i] > 0) { g_pad_poll_cooldown[i]--; continue; }
+                    XINPUT_STATE st; ZeroMemory(&st, sizeof st);
+                    if (pXInputGetState(i, &st) != ERROR_SUCCESS) { g_pad_poll_cooldown[i] = 120; continue; }
+                    b |= st.Gamepad.wButtons;
+                }
+                WORD e = (WORD)(b & ~pad_prev); pad_prev = b;
+                if (e & XINPUT_GAMEPAD_DPAD_UP) lc_key(LK_UP);
+                if (e & XINPUT_GAMEPAD_DPAD_DOWN) lc_key(LK_DOWN);
+                if (e & XINPUT_GAMEPAD_DPAD_LEFT) lc_key(LK_LEFT);
+                if (e & XINPUT_GAMEPAD_DPAD_RIGHT) lc_key(LK_RIGHT);
+                if (e & XINPUT_GAMEPAD_A) lc_key(LK_PAD_A);
+                if (e & XINPUT_GAMEPAD_START) lc_key(LK_PAD_START);
+            }
+            if (lc_folder_clicked()) {   /* the FOLDER line: open the game folder in Explorer */
+                typedef HINSTANCE (WINAPI *ShellExecuteA_t)(HWND, LPCSTR, LPCSTR, LPCSTR, LPCSTR, INT);
+                HMODULE sh = LoadLibraryA("shell32.dll");
+                ShellExecuteA_t se = sh ? (ShellExecuteA_t)(void *)GetProcAddress(sh, "ShellExecuteA") : NULL;
+                if (se) se(g_hwnd, "open", g_dir, NULL, NULL, SW_SHOWNORMAL);
+            }
+            lc_tick(now_s());
+            present_launcher();
+        }
+        if (!g_running || lc_result() != LC_PLAY) {   /* window closed / Esc: quit */
+            if (g_md_thread) WaitForSingleObject(g_md_thread, INFINITE);
+            lc_end();
+            if (g_use_d3d) d3d_shutdown();
+            return 0;
+        }
+        lc_finish(&ls);
+        ini_set_int("audio", "external_music", ls.arrange_music);
+        ini_set_int("game", "demo_sounds", ls.demo_sounds);
+        ini_set_int("game", "difficulty", ls.difficulty);
+        ini_set_int("game", "time", ls.time_adj);
+        g_wide = ls.view == 0;
+        ini_set_int("video", "widescreen", g_wide);
+        ini_set_int("megadrive", "enhancements", ls.md_enhancements);
+        ini_set_int("megadrive", "controls", ls.md_controls);
+        ini_set_int("megadrive", "music", ls.md_music);
+        {   /* the loading bar: which arranged MP3s will be decoded, and whether the Mega Drive capture is still running */
+            int have[4]; char mp[MAX_PATH];
+            for (int i = 0; i < 4; i++) { char n[96]; snprintf(n, sizeof n, "music\\%s.mp3", sho_music_tracks[i].title); path_join(mp, g_dir, n);
+                                          have[i] = ls.arrange_music && GetFileAttributesA(mp) != INVALID_FILE_ATTRIBUTES; }
+            lc_load_begin(have, g_md_thread && WaitForSingleObject(g_md_thread, 0) == WAIT_TIMEOUT);
+        }
+        lc_load_step(0, 0, "CHECKING THE ARCADE ROM");
+    }
+    char rmsg[256], detail[256];
+    if (!rom_check(rmsg, sizeof rmsg, detail, sizeof detail)) {
+        char box[3072];
+        snprintf(box, sizeof box, "%s\n%s\n\n%s\n\nPut your MAME 'shangon.zip' (Super Hang-On, sitdown/upright, unprotected) next to SuperHangOn.exe.",
+                 rmsg, detail, g_rom_err);
+        MessageBoxA(g_hwnd, box, "Super Hang-On Ultimate", MB_ICONERROR);
+        if (g_md_thread) WaitForSingleObject(g_md_thread, INFINITE);
+        if (g_use_d3d) d3d_shutdown();
+        return 1;
+    }
+    if (ini_int("audio", "external_music", 1)) {
+        char music_dir[MAX_PATH], music_err[512];
+        path_join(music_dir, g_dir, "music");
+        if (g_in_launcher) sho_music_load_progress = lc_music_progress;
+        sho_load_music(music_dir, AUDIO_RATE, music_err, sizeof music_err);
+        sho_music_load_progress = NULL;
+    }
+    g_md_present = md_rom_present();   /* the Mega Drive options only apply with the Mega Drive ROM there */
+    load_sound_levels();
+    apply_sound_levels(0);
+    if (g_md_thread) {   /* Original Mode's screens and courses from the Mega Drive ROM: usually ready by now */
+        while (WaitForSingleObject(g_md_thread, 5) == WAIT_TIMEOUT) if (g_in_launcher) lc_load_step(2, 0, "PREPARING ORIGINAL MODE");
+        CloseHandle(g_md_thread); g_md_thread = NULL;
+    }
+    else if (ini_int("megadrive", "enhancements", 0)) {   /* Original Mode graphics/courses from the Mega Drive ROM, before the arcade boots */
+        char merr[256];
+        if (find_md_rom(g_md_path, sizeof g_md_path)) mdgfx_capture(g_md_path, merr, sizeof merr);
+    }
+    sho_reset();
+    load_nvram();
+    apply_game_settings();
+    {   char sav[MAX_PATH]; path_join(sav, g_dir, "shangon_original.sav"); sho_md_set_save_path(sav);
+        sho_md_configure(g_md_present && ini_int("megadrive", "enhancements", 0), g_md_present && ini_int("megadrive", "controls", 0));
+        sho_md_dev_race(ini_int("dev", "original_race", 0));
+        sho_md_set_music(g_md_present && ini_int("megadrive", "enhancements", 0) && ini_int("megadrive", "music", 0));   /* the Mega Drive's own sound driver */
+        if (sho_md_music_active()) sho_silence_music(); }                      /* the arcade's songs off: the Mega Drive's play instead */
+    if (g_in_launcher) { lc_load_step(3, 1.0f, "STARTING THE GAME"); lc_present_hook = NULL; lc_end(); g_in_launcher = 0; }
+    memset(g_keys, 0, sizeof g_keys);
     update_title();
+    InvalidateRect(g_hwnd, NULL, TRUE);
 
     timeBeginPeriod(1);
     SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);

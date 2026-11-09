@@ -68,7 +68,7 @@ RECOMP=1 WIDE=1 SHOTS=300 CLASS=2 ./shotest shangon.zip 3600 auto   # 16:9 scree
 * `M_004944` override (class/music select input): both select loops add the step word at $261016 to their
   index and wrap with AND 3; gamepad navigation supplies +1/-1. While a select screen is active (hook seen),
   the core maps A to the Start bit of the input port.
-* `win32_launcher.c`: settings window shown before the game (no artwork; just the settings panel). Settings are written to shangon.ini.
+* Launcher: `launcher_core.c` (shared, plain C) draws the settings in the game window on all three platforms; settings are written to shangon.ini by each frontend.
 
 ## v0.5 additions
 * ts743's arranged-soundtrack support (`sho_music.c`, dr_mp3): MP3s decoded at start; song start commands are
@@ -337,6 +337,59 @@ Original Mode race: arcade stop commands (00,83,8e,92,9e,9f) no longer reach the
 ## 0.9.26
 - win32_main: sound levels per soundtrack (sound_mode(): 2 = MD Music on, 1 = external_music, 0 = regular), defaults 10/10, 6/10 (arrange), 10/10.
 
+## 0.9.27
+- md_steer_adc: only with cfg_ctl (Apply Mega Drive Controls); without it Original Mode steers like the arcade too.
+- Original Mode music select previews in the chosen soundtrack: mdsnd_command_hook (sho_mdsnd.c) sees the live Mega
+  Drive's sound commands; md_command_hook (sho_md.c) turns its race songs $82-$85 (table $7E2A) into the arcade's
+  ($9D/$96/$82/$81), plays the MP3 (pv_mode 2) or hands the command to the arcade's sound CPU (pv_mode 1: the
+  command byte of the next packet is replaced in sho_md_route_sound, which now returns the byte to deliver, and the
+  arcade's own commands are held at $80 meanwhile), and gives the Mega Drive $B1 (stop at once; $B0 fades). Its $B0
+  on leaving the screen, another song, begin_race_r or END stop the preview ($00 to the arcade). sho_audio keeps
+  the arcade mix (FM + PCM drums) or the MP3 through md_mute while a preview plays. With Mega Drive Music on,
+  nothing changes. The arcade songs start about 3/4 s after the command, as on the arcade's own music select.
+
+## 0.9.28
+- Windows/Mac launchers: artwork panel back (ART_W 414 x ART_H 586), now the arcade flyer (800x1133).
+- Linux launcher: `res/launcher_bg.png` (1920x1080) built in with `.incbin` (the build runs from source/), decoded by a small
+  PNG reader (puff for the inflate) and drawn smoothly scaled under a 640x360 ARGB canvas (letterboxed to 16:9). Text in
+  the arcade's text tiles (`sho_text_font()`, ASCII = tile number; pixel 1 = outline, 2/3 = letter; lower case and ':'
+  are not letters, so capitals / the 5x7 stand-in with an outline). Panel at (10,104) 312 wide, under the logo, left of
+  the bikes. LAUNCHER_SHOT=file.bmp saves the first picture and quits (development).
+
+## 0.9.29
+- Linux loading bar: after PLAY `launcher_run` keeps its textures (and a copy of the settings); `launcher_progress(r, f, text)`
+  redraws the launcher with the bar (at most every 30 ms, pumping events) and `launcher_close` frees it before the game
+  takes the window. linux_main: `plan_loading` weights the steps by expected time (ROM 0.05 s, 0.35 s per MP3 found,
+  ~6 s x what is left of the Mega Drive capture, start 0.05 s); the MP3s and the capture thread run at the same
+  time, so their stretch shows their combined progress. `sho_music_load_progress` (sho_music.c decodes each MP3
+  in 64k-frame pieces, fraction = stream position / file size); `mdgfx_progress` 0..100 (title, command, parts
+  screens to 19, then 80 over the seven courses, which take most of the time); `g_md_done` set by the thread.
+  LOADDBG=1 prints the loading time; LAUNCHER_PLAY=1 presses PLAY; LAUNCHER_LOAD_SHOT=name saves each step.
+
+## 0.9.30
+- One launcher for all three: `launcher_core.c/.h` (no platform code) holds the settings, the arcade font (`sho_text_font()`;
+  stand-ins from `launcher_font.h`), the PNG reader, the 640x360 canvas, input (`lc_key` LK_*, `lc_click` in canvas
+  pixels, `lc_folder_clicked`), `lc_tick`, the loading bar (`lc_load_begin/step`, `lc_music_progress`, `lc_present_hook`,
+  `lc_clock`) and `lc_image()`: the 1920x1080 picture with the canvas blended in at 3x (only the canvas rows that
+  changed are redone). `lc_view_rect` / `lc_to_canvas` letterbox to 16:9 and map clicks.
+- Picture `res/launcher_bg.png`: Linux `.incbin` (linux_launcher.c), Windows RCDATA 3 in app.rc (FindResource),
+  Mac the bundle's Resources (build_mac.sh copies it). Display choices per platform via `view_names` / `view_desc`
+  (Windows: 16:9 / 4:3 = ini widescreen; Linux: fit window / 16:9 / 4:3; Mac: fit screen / 16:9 / 4:3).
+- Windows: the game window and D3D11 (texture 1920x1080) are made before the launcher; `present_launcher` = d3d_present of
+  lc_image with sharp-bilinear (GDI: StretchDIBits HALFTONE); wndproc sends keys and clicks to the launcher while
+  `g_in_launcher`; XInput d-pad/A/Start edges; FOLDER opens Explorer (ShellExecuteA from shell32 at run time).
+  d3d_present uploads images too big for its padding buffer as they are.
+- Mac: window + Metal (textures 1920x1080) first; `present_launcher` = mtl_present of lc_image (sharp-bilinear) in the
+  usable rect; GameView mouseDown -> `launcher_mouse`; pads = GCController + HID bits; FOLDER opens Finder;
+  Cmd+Q in the launcher = Esc. Not compiled in the Linux workspace: build on a Mac (build_mac.sh) to check.
+- Removed: win32_launcher.c/.h, mac_launcher.m/.h, res/launcher_art.*. Version: `sho_version.h` (shown under the bike).
+
+## 0.9.32
+- Loading bar at FOLDER_Y - 24 (the gap under the ROM lines; clear of them even with a two-line Mega Drive ROM detail); the key help line is left out while loading.
+
+## 0.9.31
+- Launcher panel at (0,104), 322 wide, to the bottom edge; no accent line.
+
 ## macOS build (0.9.26 Mac 1)
 | Path | What |
 |---|---|
@@ -388,3 +441,27 @@ Original Mode race: arcade stop commands (00,83,8e,92,9e,9f) no longer reach the
   involved. X/Y = left stick, hat = d-pad, triggers = Simulation Brake/Accelerator or a Z/Rz (else Rx/Ry) pair that
   rests at its minimum; buttons by number via `[pad] map=` (default 1,2,4,5,8,11,12 = A B X Y RB Back Start). HID pads
   are ignored once the framework delivers events (no doubled input). The event pump now uses `[NSDate distantPast]`.
+
+## Linux frontend (Linux 1)
+
+- `src/linux_main.c` is the Linux twin of `mac_main.m` / `win32_main.c`, on SDL2: window + renderer (vsync), streaming texture
+  of the framebuffer (`SDL_PIXELFORMAT_RGB888`), sharp-bilinear = nearest enlargement by the whole factor that fits into a
+  target texture, then a linear copy to the letterboxed rectangle. "Fit window" view uses `sho_view_width_for_aspect()` on
+  the renderer's output size, as the Mac's fit screen does.
+- Pacing: with vsync, one iteration per refresh, locked to k refreshes per game frame at multiples of 60 Hz (the Mac's
+  display-link logic, with ticks measured from the time between presents). If presents return at once for a second
+  (vsync ignored), it switches to clock pacing until the display changes; `[video] vsync=0` forces clock pacing.
+- Audio: SDL callback pulling the same 48 kHz ring buffer with the same queue-target drift correction as the Mac.
+- Input: keyboard via scancodes (Windows keys incl. Ctrl as throttle; Ctrl+digits are the development keys, so the digit
+  game keys are ignored while Ctrl is held); pads via `SDL_GameController` (Xbox layout), unknown pads as plain joysticks
+  with `[pad] map=` (1-based, as on the Mac); `gamecontrollerdb.txt` in the game folder is loaded if present.
+- `src/linux_launcher.c`: the launcher drawn into a 640x360 canvas (`SDL_RenderSetLogicalSize`, so clicks map too) with
+  `src/linux_font.h`, a 5x7 font drawn for the project. Same fields as `mac_launcher.h`.
+- Game folder: the executable's folder (`/proc/self/exe`), else `$XDG_DATA_HOME`/`~/.local/share/super-hang-on-ultimate`.
+- CPU fibers: glibc `ucontext` (as the headless test build always used); `RC_ASM_FIBERS` selects `rc_ctx.c` if ever needed.
+- `build_linux.sh` (also `./build.sh linux`) finds SDL2 with pkg-config / sdl2-config (or `SDL2_CFLAGS` / `SDL2_LIBS`) and ends
+  with the 1200-frame self-test against `tests/selftest_1200.txt` (PASSED on x86-64 Ubuntu 24.04, gcc 13, SDL 2.30).
+  `installer/linux/install.sh <shangon.zip> [md rom]` = dependency check + `setup.py` + build + per-user install with a
+  `.desktop` entry and `~/.local/bin/superhangon`.
+- Checked under Xvfb: launcher (keyboard), title, mode choice, Original Mode screens, an arcade race with the keyboard,
+  audio output (SDL disk driver). Not checked here: real gamepads, a real compositor's vsync, Wayland, ARM64.

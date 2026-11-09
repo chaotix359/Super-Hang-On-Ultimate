@@ -129,7 +129,7 @@ int main(int argc, char **argv) {
             if (f == 400) in.start = 1; if (f == 440) in.nav_down = 1; if (f == 470 || f == 540) in.pad_a = 1;   /* (ARCADE MODE is the default: down to ORIGINAL MODE) */
             if (s_ != st_prev) { t_in = 0; st_prev = s_; } else t_in++;
             if (ph == 11 && s_ == 0x25 && races < atoi(getenv("MDAUTO"))) { if (t_in >= 90 && t_in < 94) in.nav_down = 1; if (t_in >= 120 && t_in < 124) in.nav_down = 1; if (t_in >= 150 && t_in < 154) in.pad_a = 1; }
-            if (ph == 11 && (s_ == 0x0d || s_ == 0x0c) && t_in >= 60 && t_in < 64) in.pad_a = 1;
+            { int hold = getenv("MDSELHOLD") ? atoi(getenv("MDSELHOLD")) : 60; if (ph == 11 && (s_ == 0x0d || s_ == 0x0c) && t_in >= hold && t_in < hold + 4) in.pad_a = 1; }
             if (getenv("AUTODBG") && (in.nav_down || in.pad_a)) printf("AUTOKEY f%d s %02x t %d d%d a%d ph %d\n", f, s_, t_in, in.nav_down, in.pad_a, ph);
             if ((ph == 8 || ph == 9) && !getenv("MDAUTORACE")) { if (++ph_t == 500) { printf("AUTO f%d result (race %d)\n", f, races + 1); md_test_result(1); races++; ph_t = 0; } } else ph_t = 0;
         }

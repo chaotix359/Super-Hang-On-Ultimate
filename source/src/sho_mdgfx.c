@@ -623,7 +623,9 @@ static void take_font(void) {
     for (int p = 0; p < 4; p++) for (int c = 0; c < 16; c++) mdgfx->pal[p][c] = md_col(cram[p * 16 + c]);
 }
 
+volatile int mdgfx_progress;   /* 0..100 while mdgfx_capture runs (it may run on another thread) */
 int mdgfx_capture(const char *path, char *err, size_t errlen) {
+    mdgfx_progress = 0;
     long n = 0; uint8_t *b = load_rom_file(path, &n);
     if (!b) { snprintf(err, errlen, "Mega Drive ROM not found"); return 0; }
     if (n != MD_ROM_SIZE || crc32_buf(b, (size_t)n) != MD_ROM_CRC) { free(b); snprintf(err, errlen, "Mega Drive ROM is not Super Hang-On (World) (Rev A)"); return 0; }
@@ -635,8 +637,8 @@ int mdgfx_capture(const char *path, char *err, size_t errlen) {
     /* run 1: title (ARCADE / ORIGINAL), then the command screen with every portrait and box up */
     md_power_on();
     static const press p1[] = { { 300, S }, { 360, S }, { 420, D }, { 470, S }, { 560, D }, { 620, S } };
-    run_to(455, p1, 6); capture_frame(mdgfx->img[MDG_TITLE]); clean_logo(mdgfx->img[MDG_TITLE]);
-    run_to(720, p1, 6); capture_frame(mdgfx->img[MDG_COMMAND]);
+    run_to(455, p1, 6); capture_frame(mdgfx->img[MDG_TITLE]); clean_logo(mdgfx->img[MDG_TITLE]); mdgfx_progress = 4;
+    run_to(720, p1, 6); capture_frame(mdgfx->img[MDG_COMMAND]); mdgfx_progress = 7;
     take_font();
     mdgfx->backdrop = md_col(cram[reg[7] & 63]);
     if (getenv("MDFLOW")) {   /* research: state flow from the command screen through a race and back */
@@ -664,9 +666,9 @@ int mdgfx_capture(const char *path, char *err, size_t errlen) {
     md_power_on();
     static const press p2[] = { { 300, S }, { 360, S }, { 420, D }, { 470, S }, { 560, S },
                                 { 720, D }, { 800, D }, { 880, D }, { 960, D }, { 1040, D } };
-    for (int k = 0; k < 6; k++) { run_to(700 + k * 80, p2, 10); capture_frame(mdgfx->img[MDG_PARTS0 + k]); }
+    for (int k = 0; k < 6; k++) { run_to(700 + k * 80, p2, 10); capture_frame(mdgfx->img[MDG_PARTS0 + k]); mdgfx_progress = 7 + 2 * (k + 1); }
     /* run 3..: each Original Mode race's course at the starting grid: colours and background strip */
-    for (int r = 0; r < MD_NRACES; r++) capture_scene(r);
+    for (int r = 0; r < MD_NRACES; r++) { capture_scene(r); mdgfx_progress = 19 + 80 * (r + 1) / MD_NRACES; }
     fill_objects();
     sho_alt_bus = NULL;
     rom = NULL; romsz = 0;
@@ -677,6 +679,7 @@ int mdgfx_capture(const char *path, char *err, size_t errlen) {
         if (!diff) { snprintf(err, errlen, "Mega Drive screens could not be captured"); return 0; }   /* rom stays for courses */
     }
     mdgfx->ok = 1;
+    mdgfx_progress = 100;
     return 1;
 }
 

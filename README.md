@@ -1,12 +1,10 @@
 # Super Hang-On Ultimate
 
-**Native Port + Mega Drive Original Mode Mod** – a native Windows and macOS port of the arcade game Super Hang-On,
+**Native Port + Mega Drive Original Mode Mod** – a native Windows, macOS and Linux port of the arcade game Super Hang-On,
 with an optional Mega Drive Original Mode.
 
-I have made a video explaining this project here: <https://www.youtube.com/watch?v=mqXxxJ72bdk>
-
-One source tree that builds both the Windows `SuperHangOn.exe` and the macOS `SuperHangOn.app`
-(universal: Apple Silicon + Intel). Version 0.9.26 alpha.
+One source tree that builds the Windows `SuperHangOn.exe`, the macOS `SuperHangOn.app`
+(universal: Apple Silicon + Intel) and the Linux `SuperHangOn` (SDL2). Version 0.9.32 alpha.
 
 **You must supply your own game data.** No ROMs are included.
 
@@ -22,19 +20,21 @@ Super Hang-On is © SEGA; Super Hang-On Ultimate is a fan project and is not aff
 | Path | What |
 |---|---|
 | `source/src/` | the game. Shared core (`sho_*.c`, `rc_runtime.c`) plus one frontend per platform |
-| `source/src/win32_*.c` | Windows frontend (Direct3D 11, launcher) |
-| `source/src/mac_*.m`, `ini_file.c`, `rc_ctx.c` | macOS frontend (Metal, launcher, own fiber stack switch) |
+| `source/src/launcher_core.c/.h`, `launcher_font.h` | the launcher (settings screen and loading bar) shared by all three frontends |
+| `source/src/win32_*.c` | Windows frontend (Direct3D 11; the launcher in the game window) |
+| `source/src/mac_*.m`, `ini_file.c`, `rc_ctx.c` | macOS frontend (Metal; the launcher in the game window; own fiber stack switch) |
+| `source/src/linux_*.c`, `linux_*.h` | Linux frontend (SDL2: window, sound, pads, the launcher drawn in the window); shares `ini_file.c` with the Mac |
 | `source/src/third_party/` | Musashi (68000), Z80, Nuked OPM/OPN2, puff, dr_mp3 – licences in `licenses/` |
 | `source/src/gen/` | **generated** by `setup.py` from your ROM – see "Not in Git" below |
 | `source/recomp/` | the 68000 → C recompiler, `patches/` (our hand edits), `coverage.bin` (which code the game runs) |
 | `source/res/` | icons, Windows resources |
 | `source/tests/selftest_1200.txt` | state hashes the Mac build's self-test must reproduce |
 | `LICENSE`, `NOTICE.md`, `licenses/` | the project's MIT licence, credits, and the licences of bundled third-party code |
-| `installer/windows/`, `installer/mac/` | build the installers, which create the game from the user's ROM (see their READMEs) |
-| `README.txt`, `README-MAC.txt` | the player manuals (Windows / Mac differences) |
+| `installer/windows/`, `installer/mac/`, `installer/linux/` | build the installers / install script, which create the game from the user's ROM |
+| `README.txt`, `README-MAC.txt`, `README-LINUX.txt` | the player manuals (Windows / Mac / Linux differences) |
 | `source/README-DEV.md` | developer notes for the whole project, including the Mac build |
 
-The two builds share all game logic. Only the frontends differ.
+The three builds share all game logic. Only the frontends differ.
 
 ## Building
 
@@ -50,6 +50,17 @@ xcode-select --install        # once; Command Line Tools only, full Xcode is not
 Result: `source/build/mac/SuperHangOn.app`. `ARCHS=arm64 ./build.sh mac` builds for one architecture only
 (faster). If `shangon.zip` sits in the repository root, the build ends with a 1200-frame self-test and
 should print `Self-test PASSED`.
+
+### Linux (run on Linux)
+
+```sh
+sudo apt install build-essential python3 libsdl2-dev   # Debian/Ubuntu/Mint; Fedora: gcc python3 SDL2-devel; Arch: base-devel python sdl2
+./build.sh linux              # or: cd source && ./build_linux.sh
+```
+
+Result: `source/build/linux/SuperHangOn`. If `shangon.zip` sits in the repository root, the build ends with the same 1200-frame
+self-test as the Mac (`Self-test PASSED`). Or use `installer/linux/install.sh /path/to/shangon.zip`, which does `setup.py`, the
+build and the self-test, and installs the game with a menu entry (see `README-LINUX.txt`).
 
 ### Windows – on Windows
 
@@ -90,8 +101,8 @@ music; the launcher shows how many tracks it found. Details are in `README.txt`.
 
 ## Running
 
-Put `SuperHangOn.exe` / `SuperHangOn.app` in a folder together with `shangon.zip`; that folder is the game folder
-(settings, high scores and saves live there). See `README.txt` and `README-MAC.txt` for controls and options.
+Put `SuperHangOn.exe` / `SuperHangOn.app` / the Linux `SuperHangOn` in a folder together with `shangon.zip`; that folder is the game folder
+(settings, high scores and saves live there). See `README.txt`, `README-MAC.txt` and `README-LINUX.txt` for controls and options.
 
 ## Not in Git (on purpose)
 
@@ -121,5 +132,5 @@ The project's own source code is under the **MIT licence** (`LICENSE`, © 2026 c
 its own licences – see `NOTICE.md` and `licenses/`.
 
 The licence covers source code only. It does not cover Super Hang-On (© SEGA), the code `setup.py` generates from your ROM,
-or programs built from it: a compiled `SuperHangOn.exe` / `.app` contains that generated code, so build it for yourself and
+or programs built from it: a compiled `SuperHangOn.exe` / `.app` / Linux `SuperHangOn` contains that generated code, so build it for yourself and
 **do not upload builds** (GitHub Releases included). Share the source; everyone builds their own with their own ROM.

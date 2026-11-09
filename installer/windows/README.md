@@ -9,7 +9,7 @@ installation and thrown away afterwards.
 
 1. Install **Inno Setup 6.3 or newer** (free): <https://jrsoftware.org/isdl.php>
 2. In the repository folder: `powershell -ExecutionPolicy Bypass -File installer\windows\build-installer.ps1`
-3. The result is `installer\windows\output\SuperHangOnUltimate-Setup-0.9.26.exe`.
+3. The result is `installer\windows\output\SuperHangOnUltimate-Setup-0.9.32.exe`.
 
 The first run downloads Python and LLVM-MinGW into `installer\windows\cache` and records their SHA-256 in `downloads.lock`
 (commit that file; later runs verify against it). The script refuses to build if `src\gen`, `recomp\overrides`, a ROM or a built
