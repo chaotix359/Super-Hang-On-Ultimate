@@ -41,6 +41,7 @@ static void present_loading(void) {   /* lc_load_step: the launcher with the loa
 
 int launcher_run(SDL_Window *win, SDL_Renderer *r, launcher_settings *s, launcher_rom_check_fn check) {
     (void)win; ren = r;
+    SDL_ShowCursor(SDL_ENABLE);   /* the launcher's menus take clicks, in fullscreen too */
     lc_begin(s, check, sho_launcher_png, (size_t)(sho_launcher_png_end - sho_launcher_png));
     int w = 0, h = 0; const uint32_t *px = lc_background(&w, &h);
     if (px) {   /* the picture, smoothly scaled */
@@ -58,8 +59,15 @@ int launcher_run(SDL_Window *win, SDL_Renderer *r, launcher_settings *s, launche
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) lc_key(LK_ESC);
-            else if (e.type == SDL_KEYDOWN) {
+            else if (e.type == SDL_KEYDOWN && lc_wants_key()) {   /* the controls screen is waiting for a key to assign */
+                SDL_Scancode sc = e.key.keysym.scancode;
+                if (e.key.repeat) { }
+                else if (sc == SDL_SCANCODE_ESCAPE) lc_key(LK_ESC);
+                else if (!(sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F12)) lc_raw_key((int)sc);
+            } else if (e.type == SDL_KEYDOWN) {
                 switch (e.key.keysym.sym) {
+                case SDLK_TAB: lc_key(LK_TAB); break;
+                case SDLK_DELETE: case SDLK_BACKSPACE: lc_key(LK_CLEAR); break;
                 case SDLK_UP: lc_key(LK_UP); break;
                 case SDLK_DOWN: lc_key(LK_DOWN); break;
                 case SDLK_LEFT: lc_key(LK_LEFT); break;
@@ -70,10 +78,10 @@ int launcher_run(SDL_Window *win, SDL_Renderer *r, launcher_settings *s, launche
                 }
             } else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
                 switch (e.cbutton.button) {
-                case SDL_CONTROLLER_BUTTON_DPAD_UP: lc_key(LK_UP); break;
-                case SDL_CONTROLLER_BUTTON_DPAD_DOWN: lc_key(LK_DOWN); break;
-                case SDL_CONTROLLER_BUTTON_DPAD_LEFT: lc_key(LK_LEFT); break;
-                case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: lc_key(LK_RIGHT); break;
+                case SDL_CONTROLLER_BUTTON_DPAD_UP: lc_key(LK_PAD_UP); break;
+                case SDL_CONTROLLER_BUTTON_DPAD_DOWN: lc_key(LK_PAD_DOWN); break;
+                case SDL_CONTROLLER_BUTTON_DPAD_LEFT: lc_key(LK_PAD_LEFT); break;
+                case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: lc_key(LK_PAD_RIGHT); break;
                 case SDL_CONTROLLER_BUTTON_A: lc_key(LK_PAD_A); break;
                 case SDL_CONTROLLER_BUTTON_START: lc_key(LK_PAD_START); break;
                 }
@@ -93,7 +101,15 @@ int launcher_run(SDL_Window *win, SDL_Renderer *r, launcher_settings *s, launche
         frame++;
         {   /* development: LAUNCHER_SHOT=file.bmp saves the first picture and quits; LAUNCHER_PLAY=1 presses PLAY */
             const char *shot = getenv("LAUNCHER_SHOT");
-            if (shot && frame > 20) { save_shot(shot); lc_key(LK_ESC); }
+            static const char *keys; static int keys_read;   /* LAUNCHER_KEYS=udlrestc: presses those keys, one every 6 pictures (c = click "x,y,") */
+            if (!keys_read) { keys = getenv("LAUNCHER_KEYS"); keys_read = 1; }
+            if (keys && *keys && frame > 10 && frame % 6 == 0) {
+                char c = *keys++;
+                if (c == 'c') { int x = 0, y = 0, used = 0; if (sscanf(keys, "%d,%d,%n", &x, &y, &used) >= 2) { keys += used; lc_click(x, y); } }
+                else { const char *set = "udlrestk", *f = strchr(set, c); static const int lk[] = { LK_UP, LK_DOWN, LK_LEFT, LK_RIGHT, LK_ENTER, LK_SPACE, LK_TAB, LK_CLEAR };
+                       if (f) lc_key(lk[f - set]); }
+            }
+            if (shot && frame > 20 && !(keys && *keys)) { static int taken; if (!taken) save_shot(shot); taken = 1; lc_key(LK_ESC); }
             if (getenv("LAUNCHER_PLAY") && frame > 20) lc_key(LK_ENTER);
         }
         SDL_RenderPresent(r);

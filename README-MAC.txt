@@ -1,8 +1,8 @@
-SUPER HANG-ON ULTIMATE - NATIVE macOS BUILD   v0.9.32 alpha (Mac 8)
+SUPER HANG-ON ULTIMATE - NATIVE macOS BUILD   v0.9.34 alpha (Mac 10)
 Native Port + Mega Drive Original Mode Mod
 ====================================================================
 
-The same game as the Windows v0.9.32 alpha (recompiled C, Original Mode, Mega Drive options, arranged
+The same game as the Windows v0.9.34 alpha (recompiled C, Original Mode, Mega Drive options, arranged
 soundtrack), for macOS 11 Big Sur or later on Apple Silicon and Intel Macs.
 
 WHAT'S NEW IN MAC 2
@@ -23,7 +23,7 @@ WHAT'S DIFFERENT ON THE MAC
   left edge, SCORE / SPEED on the right edge, TIME and the bike in the centre. The Original Mode LAP TIME,
   SPEED and progress bar follow the edges the same way. Nothing ever sits under the notch.
   The window title shows the width in use, e.g. "[fit screen 382, sharp-bilinear, Metal, C]".
-  16:9 widescreen and 4:3 original are still there (launcher, Display menu, Cmd+1/2/3).
+  The fixed shapes 16:9, 18:9, 19:9, 20:9, 21:9 and 4:3 are there too (launcher, Display menu, Cmd+2 to Cmd+7).
 * Fullscreen is macOS's own fullscreen (its own Space). Ctrl+Cmd+F, Cmd+Return or F11 toggle it; Esc leaves it.
 * Cmd+Q quits (high scores and settings are saved first).
 
@@ -88,11 +88,16 @@ GAMEPAD (Xbox, PlayStation and other pads macOS supports)
 
 KEYBOARD
 --------
+  These are the defaults: CONFIGURE CONTROLS on the launcher changes the keys for steering, throttle, brake,
+  supercharger, coin, start and pause ([keys_mac] in shangon.ini; of the modifier keys only Shift can be assigned),
+  what each controller button does, and which controller is used. Its DEVICE list shows the controllers in System
+  Settings > Game Controllers by name, then pads read directly over USB / Bluetooth, marked (HID).
+  New in 0.9.34 and NOT YET BUILT ON A MAC: if build_mac.sh reports errors in mac_main.m, they are from this.
   Left/Right or A/D ...... Steer       Up / W / Z ............ Throttle
   Down / S / X ........... Brake       Space / Shift ......... Supercharger
   5 or C ................. Coin        1 or Return ........... Start
   P or Cmd+P ............. Pause       F3 or Cmd+R ........... Back to the title screen
-  Cmd+1 / Cmd+2 / Cmd+3 .. Fit screen / 16:9 / 4:3   (F9 cycles)
+  Cmd+1 .. Cmd+7 ......... Fit screen / 16:9 / 18:9 / 19:9 / 20:9 / 21:9 / 4:3   (F9 cycles, Shift+F9 back)
   Cmd+4 / Cmd+5 / Cmd+6 .. Sharp / smooth / sharp-bilinear scaling   (F8 cycles)
   Ctrl+Cmd+F, Cmd+Return or F11 ... Fullscreen       Esc ... Leave fullscreen       Cmd+Q ... Quit
   F2 (hold) .............. Arcade test/service menu   9 ...... Service coin
@@ -104,7 +109,7 @@ KEYBOARD
 SETTINGS (shangon.ini)
 ----------------------
   As on Windows, with these [video] differences:
-  view = fit (default), 16:9 or 4:3      (replaces widescreen=; an old widescreen= line is still understood)
+  view = fit (default), 16:9, 18:9, 19:9, 20:9, 21:9 or 4:3   (replaces widescreen=; an old widescreen= line is still understood)
   fullscreen, filter, stretch as on Windows; renderer= and vrr= are Windows-only (the Mac always uses Metal,
   locked to the display: 60 Hz and 120 Hz ProMotion screens give perfectly even motion).
   Command line (Terminal): SuperHangOn.app/Contents/MacOS/SuperHangOn [-window] [-fullscreen] [-interpreter] [-play] [path/to/shangon.zip]

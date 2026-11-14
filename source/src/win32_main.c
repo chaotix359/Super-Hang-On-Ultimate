@@ -18,6 +18,10 @@
 #include "sho_core.h"
 #include "win32_d3d11.h"
 #include "launcher_core.h"
+#include "sho_views.h"
+#include "sho_pace.h"
+#include "sho_controls.h"
+#include "sho_version.h"
 #include "sho_music.h"
 #include "sho_md.h"
 #include "sho_mdgfx.h"
@@ -29,10 +33,11 @@ extern int sho_recomp;
 #define AUDIO_TARGET 3200            /* samples queued ahead (~67 ms) */
 
 static HWND g_hwnd;
+static int g_dev_dirty = 1;   /* the controller list needs making again (WM_DEVICECHANGE) */
 static int g_md_present, g_pause_menu, g_in_launcher;   /* g_in_launcher: the settings screen is in the window */
 static void reset_to_title(void);
 static void apply_sound_levels(int save);
-static int g_fullscreen = 1, g_running = 1, g_paused = 0, g_filter = 2, g_stretch = 0, g_wide = 1, g_vrr = 0, g_use_d3d = 0;
+static int g_fullscreen = 1, g_running = 1, g_paused = 0, g_filter = 2, g_stretch = 0, g_shape = 0, g_vrr = 0, g_use_d3d = 0;   /* g_shape: the display shape (sho_views.h; F9) */
 static WINDOWPLACEMENT g_wp = { sizeof(WINDOWPLACEMENT) };
 static BITMAPINFO g_bmi;
 static char g_dir[MAX_PATH], g_ini[MAX_PATH], g_nv[MAX_PATH];
@@ -69,7 +74,7 @@ static void write_default_ini(void) {
     fputs("; Super Hang-On Ultimate settings\n"
           "[video]\n"
           "fullscreen=1      ; start in fullscreen (Alt+Enter / F11 toggles)\n"
-          "widescreen=1      ; 1 = 16:9 extended view, 0 = original 4:3 (F9 toggles)\n"
+          "aspect=16:9       ; 16:9, 18:9, 19:9, 20:9, 21:9 or 4:3 (F9 steps through them, Shift+F9 back)\n"
           "filter=2          ; 0 sharp, 1 smooth, 2 sharp-bilinear (F8 cycles)\n"
           "stretch=0         ; 1 = stretch to fill the screen (distorts the picture)\n"
           "renderer=d3d11    ; d3d11 or gdi\n"
@@ -104,6 +109,7 @@ static void write_default_ini(void) {
 }
 static int ini_int(const char *sec, const char *key, int def) { return (int)GetPrivateProfileIntA(sec, key, def, g_ini); }
 static void ini_str(const char *sec, const char *key, const char *def, char *out, int n) { GetPrivateProfileStringA(sec, key, def, out, (DWORD)n, g_ini); char *c = strchr(out, ';'); if (c) *c = 0; while (*out && out[strlen(out) - 1] == ' ') out[strlen(out) - 1] = 0; }
+static void ini_set(const char *sec, const char *key, const char *v) { WritePrivateProfileStringA(sec, key, v, g_ini); }
 static void ini_set_int(const char *sec, const char *key, int v) { char b[16]; snprintf(b, sizeof b, "%d", v); WritePrivateProfileStringA(sec, key, b, g_ini); }
 
 static void apply_game_settings(void) {
@@ -112,12 +118,29 @@ static void apply_game_settings(void) {
     static const uint8_t dmap[4] = { 0x04, 0x06, 0x02, 0x00 }, tmap[4] = { 0x10, 0x18, 0x08, 0x00 };
     uint8_t dsw = 0xe0 | (demo ? 0 : 1) | dmap[diff & 3] | tmap[tim & 3];
     sho_set_dips(free_play ? 0x00 : 0xff, dsw);   /* coinage: both nibbles 0 = free play */
-    sho_set_widescreen(g_wide);
+    sho_pause_set_display(sho_shapes[g_shape].name);
+    sho_set_view_width(sho_shapes[g_shape].width);
+}
+/* the display shape: F9 steps through them (Shift+F9 back), as does DISPLAY on the pause menu */
+static void update_title(void);
+static void set_shape(int i) {
+    g_shape = ((i % SHO_NSHAPES) + SHO_NSHAPES) % SHO_NSHAPES;
+    sho_pause_set_display(sho_shapes[g_shape].name);     /* (first: changing the width redraws the pause menu) */
+    sho_set_view_width(sho_shapes[g_shape].width);
+    ini_set("video", "aspect", sho_shapes[g_shape].name);
+    ini_set_int("video", "widescreen", g_shape != SHO_SHAPE_43);   /* (for older versions) */
+    update_title();
+    if (g_hwnd) InvalidateRect(g_hwnd, NULL, TRUE);
+}
+static int read_shape(void) {
+    char a[16]; ini_str("video", "aspect", "", a, sizeof a);
+    int i = sho_shape_find(a);
+    return i >= 0 ? i : ini_int("video", "widescreen", 1) ? 0 : SHO_SHAPE_43;
 }
 
 static void update_title(void) {
     char t[160];
-    snprintf(t, sizeof t, "Super Hang-On Ultimate  [%s, %s, %s%s%s%s]", g_wide ? "16:9" : "4:3", filter_names[g_filter],
+    snprintf(t, sizeof t, "Super Hang-On Ultimate  [%s, %s, %s%s%s%s]", sho_shapes[g_shape].name, filter_names[g_filter],
              g_use_d3d ? "Direct3D 11" : "GDI", sho_recomp ? ", C" : ", interpreter",
              g_md_present && ini_int("megadrive", "enhancements", 0) ? ", MD Enhancements" : "", g_md_present && ini_int("megadrive", "controls", 0) ? ", MD Controls" : "", g_md_present && ini_int("megadrive", "enhancements", 0) && ini_int("megadrive", "music", 0) ? ", MD Music" : "");
     SetWindowTextA(g_hwnd, t);
@@ -126,6 +149,11 @@ static void update_title(void) {
 /* ------------------------------------------------------------------ */
 /* display                                                            */
 /* ------------------------------------------------------------------ */
+/* the mouse pointer: hidden in fullscreen once the game is running; the launcher always has it (its menus take clicks) */
+static void sync_cursor(void) {
+    if (g_fullscreen && !g_in_launcher) { while (ShowCursor(FALSE) >= 0) {} }
+    else { while (ShowCursor(TRUE) < 0) {} }
+}
 static void set_fullscreen(int on) {
     DWORD style = GetWindowLongA(g_hwnd, GWL_STYLE);
     if (on) {
@@ -135,19 +163,18 @@ static void set_fullscreen(int on) {
         SetWindowLongA(g_hwnd, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
         SetWindowPos(g_hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-        while (ShowCursor(FALSE) >= 0) {}
     } else {
         SetWindowLongA(g_hwnd, GWL_STYLE, (style & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
         SetWindowPlacement(g_hwnd, &g_wp);
         SetWindowPos(g_hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-        while (ShowCursor(TRUE) < 0) {}
     }
     g_fullscreen = on;
+    sync_cursor();
     InvalidateRect(g_hwnd, NULL, TRUE);
 }
 
 /* display aspect of the game image: the arcade monitor is 4:3 for 320 pixels; the 16:9 view keeps that pixel shape */
-static double image_aspect(void) { return g_stretch ? 0.0 : (4.0 / 3.0) * sho_width() / (double)SHO_W; }
+static double image_aspect(void) { return g_stretch ? 0.0 : sho_shapes[g_shape].aspect; }   /* (the shape's own aspect: fills a screen of that shape exactly) */
 
 static void present_gdi(HDC dc) {
     RECT rc; GetClientRect(g_hwnd, &rc);
@@ -234,7 +261,13 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_KEYDOWN:
         if (g_in_launcher) {   /* the settings screen: arrows, Enter, Space, Esc; F11 still switches fullscreen */
             if (w == VK_F11 && !(l & (1 << 30))) set_fullscreen(!g_fullscreen);
+            if (lc_wants_key()) {   /* the controls screen is waiting for a key to assign (Esc cancels; the F keys keep their jobs) */
+                if (w == VK_ESCAPE) lc_key(LK_ESC); else if (!(l & (1 << 30)) && !(w >= VK_F1 && w <= VK_F24) && w < 256) lc_raw_key((int)w);
+                return 0;
+            }
             switch (w) {
+            case VK_TAB: lc_key(LK_TAB); break;
+            case VK_DELETE: case VK_BACK: lc_key(LK_CLEAR); break;
             case VK_UP: lc_key(LK_UP); break;
             case VK_DOWN: lc_key(LK_DOWN); break;
             case VK_LEFT: lc_key(LK_LEFT); break;
@@ -249,7 +282,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (l & (1 << 30)) return 0;   /* auto-repeat */
         if (w == VK_F11) set_fullscreen(!g_fullscreen);
         if (w == VK_ESCAPE && g_fullscreen) set_fullscreen(0);
-        if (w == 'P') {   /* in Mega Drive mode during a race this opens the pause menu */
+        if (sho_key_is_action(KA_PAUSE, (int)w) && !(l & (1 << 30))) {   /* the pause key (P): in Mega Drive mode during a race this opens the pause menu */
             if (!g_paused) { g_paused = 1; g_pause_menu = sho_pause_begin(); }
             else { if (g_pause_menu) { sho_pause_end(); apply_sound_levels(1); } g_paused = 0; g_pause_menu = 0; }
         }
@@ -257,7 +290,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (w == '9' && (GetKeyState(VK_CONTROL) & 0x8000)) sho_md_cheat_money();   /* development: maximum money */   /* development: fully upgraded bike */
         if (w >= '0' && w <= '7' && (GetKeyState(VK_CONTROL) & 0x8000)) { sho_md_dev_race(w - '0'); ini_set_int("dev", "original_race", w - '0'); }   /* development: Original Mode race select */
         if (w == VK_F3) reset_to_title();
-        if (w == VK_F9) { g_wide = !g_wide; sho_set_widescreen(g_wide); ini_set_int("video", "widescreen", g_wide); update_title(); InvalidateRect(h, NULL, TRUE); }
+        if (w == VK_F9) set_shape(g_shape + ((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1));
         if (w == VK_F8) { g_filter = (g_filter + 1) % 3; ini_set_int("video", "filter", g_filter); update_title(); }
         return 0;
     case WM_KEYUP: if (w < 256) g_keys[w] = 0; return 0;
@@ -272,7 +305,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); if (!g_use_d3d) { if (g_in_launcher) present_launcher_gdi(dc); else present_gdi(dc); } EndPaint(h, &ps); return 0; }
     case WM_ERASEBKGND: return 1;
-    case WM_SETCURSOR: if (g_fullscreen && LOWORD(l) == HTCLIENT) { SetCursor(NULL); return TRUE; } break;
+    case WM_DEVICECHANGE: g_dev_dirty = 1; break;        /* a controller plugged in or removed: list them again */
+    case WM_SETCURSOR: if (g_fullscreen && !g_in_launcher && LOWORD(l) == HTCLIENT) { SetCursor(NULL); return TRUE; } break;
     }
     return DefWindowProcA(h, m, w, l);
 }
@@ -280,66 +314,217 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 /* ------------------------------------------------------------------ */
 /* input                                                              */
 /* ------------------------------------------------------------------ */
-static float axis_dz(float v) {
-    float a = fabsf(v);
-    if (a < g_deadzone) return 0.0f;
-    a = (a - g_deadzone) / (1.0f - g_deadzone); if (a > 1) a = 1;
-    a = powf(a, g_steer_curve);
-    return v < 0 ? -a : a;
+/* ---- controllers ----
+ * Windows has two kinds: XInput pads (Xbox pads and whatever presents itself as one: most modern pads, or others through
+ * Steam / DS4Windows), read in the Xbox layout; and every other game controller Windows knows (Control Panel > Game
+ * Controllers: the WinMM joystick list), read by button number in the usual DirectInput order (1-4 the face buttons,
+ * 5/6 bumpers, 7/8 triggers, 9/10 Back/Start, 11/12 stick clicks, the hat = d-pad). "Any controller" is every XInput
+ * pad, as it always was; the others are used when chosen on the launcher's controls screen (their buttons can be set
+ * there, with CONFIGURE WITH CONTROLLER or one by one). */
+typedef struct { int kind, id; char name[96]; } paddev;     /* kind 0 = XInput slot id, 1 = WinMM joystick id */
+#define MAXDEV 12
+static paddev g_dev[MAXDEV]; static int g_ndev; static DWORD g_dev_scan_tick;
+static void xinput_ids(DWORD *vidpid, int *n, int max) {   /* the VID/PID of the HID devices that are XInput pads (their path has "IG_") */
+    *n = 0;
+    UINT cnt = 0;
+    if (GetRawInputDeviceList(NULL, &cnt, sizeof(RAWINPUTDEVICELIST)) != 0 || !cnt || cnt > 256) return;
+    RAWINPUTDEVICELIST list[256];
+    if (GetRawInputDeviceList(list, &cnt, sizeof(RAWINPUTDEVICELIST)) == (UINT)-1) return;
+    for (UINT i = 0; i < cnt && *n < max; i++) {
+        if (list[i].dwType != RIM_TYPEHID) continue;
+        char path[512]; UINT sz = sizeof path;
+        if ((int)GetRawInputDeviceInfoA(list[i].hDevice, RIDI_DEVICENAME, path, &sz) <= 0 || !strstr(path, "IG_")) continue;
+        RID_DEVICE_INFO di; memset(&di, 0, sizeof di); di.cbSize = sizeof di; sz = sizeof di;
+        if ((int)GetRawInputDeviceInfoA(list[i].hDevice, RIDI_DEVICEINFO, &di, &sz) <= 0) continue;
+        vidpid[(*n)++] = (di.hid.dwVendorId << 16) | (di.hid.dwProductId & 0xffff);
+    }
+}
+static void winmm_name(UINT id, const JOYCAPSA *caps, char *out, int n) {   /* the name Game Controllers shows (the registry's OEM name) */
+    snprintf(out, (size_t)n, "GAME CONTROLLER %u", id + 1);
+    typedef LONG (WINAPI *open_t)(HKEY, LPCSTR, DWORD, REGSAM, PHKEY);
+    typedef LONG (WINAPI *query_t)(HKEY, LPCSTR, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
+    typedef LONG (WINAPI *close_t)(HKEY);
+    static HMODULE adv; static open_t ro; static query_t rq; static close_t rcl;
+    if (!adv) { adv = LoadLibraryA("advapi32.dll");
+        if (adv) { ro = (open_t)(void *)GetProcAddress(adv, "RegOpenKeyExA"); rq = (query_t)(void *)GetProcAddress(adv, "RegQueryValueExA"); rcl = (close_t)(void *)GetProcAddress(adv, "RegCloseKey"); } }
+    if (!ro || !rq || !rcl) return;
+    char key[160]; HKEY k; char val[96]; DWORD len = sizeof val - 1, type = 0;
+    snprintf(key, sizeof key, "System\\CurrentControlSet\\Control\\MediaProperties\\PrivateProperties\\Joystick\\OEM\\VID_%04X&PID_%04X", caps->wMid, caps->wPid);
+    if (ro(HKEY_CURRENT_USER, key, 0, KEY_READ, &k) != ERROR_SUCCESS) return;
+    if (rq(k, "OEMName", NULL, &type, (LPBYTE)val, &len) == ERROR_SUCCESS && type == REG_SZ && len > 1) { val[len] = 0; snprintf(out, (size_t)n, "%.90s", val); }
+    rcl(k);
+}
+static void devices_scan(int force) {   /* at most every two seconds (asking WinMM about joysticks that aren't there is slow) */
+    DWORD now = GetTickCount();
+    if (!force && g_dev_scan_tick && now - g_dev_scan_tick < 2000) return;
+    g_dev_scan_tick = now ? now : 1;
+    g_ndev = 0;
+    if (pXInputGetState) for (DWORD i = 0; i < 4 && g_ndev < MAXDEV; i++) {
+        XINPUT_STATE st; ZeroMemory(&st, sizeof st);
+        if (pXInputGetState(i, &st) != ERROR_SUCCESS) continue;
+        g_dev[g_ndev].kind = 0; g_dev[g_ndev].id = (int)i; snprintf(g_dev[g_ndev].name, sizeof g_dev[g_ndev].name, "XBOX CONTROLLER %lu", (unsigned long)i + 1); g_ndev++;
+    }
+    DWORD xi[16]; int nxi; xinput_ids(xi, &nxi, 16);
+    UINT nj = joyGetNumDevs(); if (nj > 16) nj = 16;
+    for (UINT id = 0; id < nj && g_ndev < MAXDEV; id++) {
+        JOYCAPSA caps; JOYINFOEX ji; memset(&ji, 0, sizeof ji); ji.dwSize = sizeof ji; ji.dwFlags = JOY_RETURNBUTTONS;
+        if (joyGetDevCapsA(id, &caps, sizeof caps) != JOYERR_NOERROR || joyGetPosEx(id, &ji) != JOYERR_NOERROR) continue;
+        int is_x = 0; for (int k = 0; k < nxi; k++) if (xi[k] == (((DWORD)caps.wMid << 16) | caps.wPid)) is_x = 1;
+        if (is_x) continue;                                 /* already in the list as an XInput pad */
+        g_dev[g_ndev].kind = 1; g_dev[g_ndev].id = (int)id; winmm_name(id, &caps, g_dev[g_ndev].name, sizeof g_dev[g_ndev].name);
+        for (int k = 0; k < g_ndev; k++) if (!strcmp(g_dev[k].name, g_dev[g_ndev].name)) {   /* two of the same: number the second */
+            size_t l = strlen(g_dev[g_ndev].name); snprintf(g_dev[g_ndev].name + l, sizeof g_dev[g_ndev].name - l, " (%d)", g_ndev + 1); break; }
+        g_ndev++;
+    }
+}
+static int read_xinput(DWORD i, sho_pad *p) {
+    memset(p, 0, sizeof *p);
+    if (!pXInputGetState) return 0;
+    if (g_pad_poll_cooldown[i] > 0) { g_pad_poll_cooldown[i]--; return 0; }
+    XINPUT_STATE st; ZeroMemory(&st, sizeof st);
+    if (pXInputGetState(i, &st) != ERROR_SUCCESS) { g_pad_poll_cooldown[i] = 120; return 0; }
+    XINPUT_GAMEPAD *g = &st.Gamepad; WORD b = g->wButtons;
+    p->lx = g->sThumbLX / 32767.0f; p->ly = g->sThumbLY / 32767.0f;
+    p->lt = g->bLeftTrigger / 255.0f; p->rt = g->bRightTrigger / 255.0f;
+    static const struct { WORD x; int pb; } m[] = {
+        { XINPUT_GAMEPAD_A, PB_A }, { XINPUT_GAMEPAD_B, PB_B }, { XINPUT_GAMEPAD_X, PB_X }, { XINPUT_GAMEPAD_Y, PB_Y },
+        { XINPUT_GAMEPAD_LEFT_SHOULDER, PB_LB }, { XINPUT_GAMEPAD_RIGHT_SHOULDER, PB_RB }, { XINPUT_GAMEPAD_BACK, PB_BACK }, { XINPUT_GAMEPAD_START, PB_START },
+        { XINPUT_GAMEPAD_LEFT_THUMB, PB_L3 }, { XINPUT_GAMEPAD_RIGHT_THUMB, PB_R3 },
+        { XINPUT_GAMEPAD_DPAD_UP, PB_UP }, { XINPUT_GAMEPAD_DPAD_DOWN, PB_DOWN }, { XINPUT_GAMEPAD_DPAD_LEFT, PB_LEFT }, { XINPUT_GAMEPAD_DPAD_RIGHT, PB_RIGHT } };
+    for (unsigned k = 0; k < sizeof m / sizeof m[0]; k++) if (b & m[k].x) p->buttons |= 1u << m[k].pb;
+    sho_pad_finish(p);
+    return 1;
+}
+static int read_winmm(UINT id, sho_pad *p) {
+    memset(p, 0, sizeof *p);
+    static JOYCAPSA caps[16]; static int have[16];
+    if (id >= 16) return 0;
+    if (!have[id]) { if (joyGetDevCapsA(id, &caps[id], sizeof caps[id]) != JOYERR_NOERROR) return 0; have[id] = 1; }
+    JOYINFOEX ji; memset(&ji, 0, sizeof ji); ji.dwSize = sizeof ji; ji.dwFlags = JOY_RETURNALL;
+    if (joyGetPosEx(id, &ji) != JOYERR_NOERROR) { have[id] = 0; return 0; }
+    const JOYCAPSA *c = &caps[id];
+    if (c->wXmax > c->wXmin) p->lx = ((float)ji.dwXpos - c->wXmin) / (float)(c->wXmax - c->wXmin) * 2.0f - 1.0f;
+    if (c->wYmax > c->wYmin) p->ly = -(((float)ji.dwYpos - c->wYmin) / (float)(c->wYmax - c->wYmin) * 2.0f - 1.0f);
+    {   /* the stick only counts once it has been seen near its centre: a throttle lever or pedal that rests at one end
+           (flight sticks, wheels) must not hold the steering over */
+        static unsigned char centred[16];
+        if (fabsf(p->lx) < 0.3f && fabsf(p->ly) < 0.3f) centred[id] = 1;
+        if (!centred[id]) p->lx = p->ly = 0;
+    }
+    static const int order[12] = { PB_A, PB_B, PB_X, PB_Y, PB_LB, PB_RB, PB_LT, PB_RT, PB_BACK, PB_START, PB_L3, PB_R3 };
+    /* PlayStation pads (DualShock 4, DualSense; Sony's vendor number): buttons 1-12 are Square, Cross, Circle, Triangle,
+       L1, R1, L2, R2, Share, Options, L3, R3 - Cross is the Xbox A, Circle B, Square X, Triangle Y */
+    static const int sony[12] = { PB_X, PB_A, PB_B, PB_Y, PB_LB, PB_RB, PB_LT, PB_RT, PB_BACK, PB_START, PB_L3, PB_R3 };
+    const int *ord = c->wMid == 0x054C ? sony : order;
+    for (int k = 0; k < 12; k++) if (ji.dwButtons & (1u << k)) p->buttons |= 1u << ord[k];
+    if ((c->wCaps & JOYCAPS_HASPOV) && (ji.dwPOV & 0xffff) != 0xffff) {   /* the hat, in hundredths of a degree */
+        DWORD a = ji.dwPOV % 36000;
+        if (a >= 29250 || a <= 6750) p->buttons |= 1u << PB_UP;
+        if (a >= 2250 && a <= 15750) p->buttons |= 1u << PB_RIGHT;
+        if (a >= 11250 && a <= 24750) p->buttons |= 1u << PB_DOWN;
+        if (a >= 20250 && a <= 33750) p->buttons |= 1u << PB_LEFT;
+    }
+    sho_pad_finish(p);
+    return 1;
+}
+static int read_dev(const paddev *d, sho_pad *p) { return d->kind == 0 ? read_xinput((DWORD)d->id, p) : read_winmm((UINT)d->id, p); }
+static const paddev *chosen_dev(void) {   /* the controller picked on the controls screen, if it is there */
+    if (!sho_ctl.device[0]) return NULL;
+    for (int i = 0; i < g_ndev; i++) if (!strcmp(g_dev[i].name, sho_ctl.device)) return &g_dev[i];
+    return NULL;
+}
+/* the launcher's controls screen */
+static int host_pad_count(void) { devices_scan(0); return g_ndev; }
+static const char *host_pad_name(int i) { return i >= 0 && i < g_ndev ? g_dev[i].name : ""; }
+static int host_pad_read(int i, sho_pad *out) {
+    if (i >= 0) return i < g_ndev ? read_dev(&g_dev[i], out) : 0;
+    int any = 0; memset(out, 0, sizeof *out);            /* any: every XInput pad and every other controller, merged */
+    for (int k = 0; k < 4 + g_ndev; k++) {
+        sho_pad p;
+        if (k < 4) { if (!read_xinput((DWORD)k, &p)) continue; }
+        else if (g_dev[k - 4].kind != 1 || !read_dev(&g_dev[k - 4], &p)) continue;
+        any = 1; out->buttons |= p.buttons;
+        if (fabsf(p.lx) > fabsf(out->lx)) out->lx = p.lx;
+        if (fabsf(p.ly) > fabsf(out->ly)) out->ly = p.ly;
+        if (p.lt > out->lt) out->lt = p.lt;
+        if (p.rt > out->rt) out->rt = p.rt; }
+    return any;
+}
+static const char *host_key_name(int vk) {
+    static char b[32];
+    static const struct { int vk; const char *n; } t[] = {
+        { VK_LEFT, "LEFT" }, { VK_RIGHT, "RIGHT" }, { VK_UP, "UP" }, { VK_DOWN, "DOWN" }, { VK_SPACE, "SPACE" }, { VK_RETURN, "ENTER" },
+        { VK_SHIFT, "SHIFT" }, { VK_CONTROL, "CTRL" }, { VK_MENU, "ALT" }, { VK_BACK, "BACKSPACE" }, { VK_TAB, "TAB" }, { VK_DELETE, "DELETE" },
+        { VK_INSERT, "INSERT" }, { VK_HOME, "HOME" }, { VK_END, "END" }, { VK_PRIOR, "PAGE UP" }, { VK_NEXT, "PAGE DOWN" }, { VK_CAPITAL, "CAPS LOCK" } };
+    for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) if (t[i].vk == vk) return t[i].n;
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) { b[0] = (char)vk; b[1] = 0; return b; }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) { snprintf(b, sizeof b, "NUMPAD %d", vk - VK_NUMPAD0); return b; }
+    UINT sc = MapVirtualKeyA((UINT)vk, 0);
+    if (sc && GetKeyNameTextA((LONG)(sc << 16), b, sizeof b) > 0) return b;
+    snprintf(b, sizeof b, "KEY %d", vk);
+    return b;
+}
+static void controls_save(void) {
+    char t[256];
+    sho_controls_pad_to_str(t, sizeof t); ini_set("pad", "actions", t);
+    ini_set("pad", "device", sho_ctl.device);
+    sho_controls_keys_to_str(t, sizeof t); ini_set("keys_windows", "keys", t);
+}
+static void controls_load(void) {
+    static const int def[KA_COUNT][KEY_SLOTS] = {
+        [KA_LEFT] = { VK_LEFT, 'A', -1, -1 }, [KA_RIGHT] = { VK_RIGHT, 'D', -1, -1 }, [KA_ACCEL] = { VK_UP, 'Z', 'W', VK_CONTROL },
+        [KA_BRAKE] = { VK_DOWN, 'X', 'S', -1 }, [KA_TURBO] = { VK_SPACE, VK_SHIFT, -1, -1 }, [KA_START] = { VK_RETURN, '1', -1, -1 },
+        [KA_COIN] = { '5', 'C', -1, -1 }, [KA_PAUSE] = { 'P', -1, -1, -1 } };
+    char t[256];
+    sho_ctl.deadzone = g_deadzone; sho_ctl.curve = g_steer_curve;
+    sho_controls_pad_defaults(g_swap_pedals);
+    ini_str("pad", "actions", "", t, sizeof t); if (t[0]) sho_controls_pad_from_str(t);
+    ini_str("pad", "device", "", sho_ctl.device, sizeof sho_ctl.device);
+    sho_controls_key_defaults(def);
+    ini_str("keys_windows", "keys", "", t, sizeof t); if (t[0]) sho_controls_keys_from_str(t);
+}
+static const lc_controls_host g_controls_host = { host_pad_count, host_pad_name, host_pad_read, host_key_name, controls_save };
+
+static int key_held(int vk) { return vk >= 0 && vk < 256 && g_keys[vk]; }
+static int is_arrow(int vk) { return vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT; }
+static int act_key_not_arrow(int ka) {   /* one of the action's keys is down, arrows aside (they move through menus) */
+    for (int i = 0; i < KEY_SLOTS; i++) { int c = sho_ctl.key[ka][i]; if (c >= 0 && !is_arrow(c) && key_held(c)) return 1; }
+    return 0;
 }
 static void read_input(sho_input *in, float dt) {
     memset(in, 0, sizeof *in);
     int focused = GetForegroundWindow() == g_hwnd;
-    int kl = focused && (g_keys[VK_LEFT] || g_keys['A']), kr = focused && (g_keys[VK_RIGHT] || g_keys['D']);
+    int menu = sho_md_overlay_active() || g_pause_menu;   /* the Original Mode screens, the pause menu */
+    int kl = focused && sho_key_action_down(KA_LEFT, key_held), kr = focused && sho_key_action_down(KA_RIGHT, key_held);
     float target = (float)(kr - kl), rate = (target == 0.0f) ? 6.0f : 3.5f;   /* keyboard: handlebar ramps */
     if (g_kb_steer < target) { g_kb_steer += rate * dt; if (g_kb_steer > target) g_kb_steer = target; }
     else if (g_kb_steer > target) { g_kb_steer -= rate * dt; if (g_kb_steer < target) g_kb_steer = target; }
     float steer = g_kb_steer, thr = 0, brk = 0;
-    if (focused && (sho_md_overlay_active() || g_pause_menu)) {   /* Original Mode screens: arrows move, Enter/Z/Space select, Backspace/X back */
+    if (focused && menu) {   /* there: arrows move, Space or the accelerate keys select, Backspace or the brake keys go back (Enter is Start) */
         in->nav_up = g_keys[VK_UP]; in->nav_down = g_keys[VK_DOWN]; in->nav_left = g_keys[VK_LEFT]; in->nav_right = g_keys[VK_RIGHT];
-        in->pad_a = g_keys['Z'] || g_keys[VK_SPACE]; in->pad_b = g_keys[VK_BACK] || g_keys['X'];
+        in->pad_a = g_keys[VK_SPACE] || act_key_not_arrow(KA_ACCEL); in->pad_b = g_keys[VK_BACK] || act_key_not_arrow(KA_BRAKE);
     }
     if (focused) {
-        if (g_keys[VK_UP] || g_keys['Z'] || g_keys[VK_CONTROL] || g_keys['W']) thr = 1;
-        if (g_keys[VK_DOWN] || g_keys['X'] || g_keys['S']) brk = 1;
-        in->turbo = g_keys[VK_SPACE] || g_keys[VK_SHIFT];
-        in->coin = g_keys['5'] || g_keys['C'];
-        in->start = g_keys['1'] || g_keys[VK_RETURN];
+        int dev = g_keys[VK_CONTROL] && !sho_key_is_action(KA_ACCEL, VK_CONTROL);   /* Ctrl+digits are the development keys */
+        if (sho_key_action_down(KA_ACCEL, key_held)) thr = 1;
+        if (sho_key_action_down(KA_BRAKE, key_held)) brk = 1;
+        in->turbo = sho_key_action_down(KA_TURBO, key_held);
+        in->coin = !dev && sho_key_action_down(KA_COIN, key_held);
+        in->start = !dev && sho_key_action_down(KA_START, key_held);
         in->test = g_keys[VK_F2];
-        in->service = g_keys['9'];
+        in->service = !dev && g_keys['9'];
     }
-    if (pXInputGetState) {
-        for (DWORD i = 0; i < 4; i++) {
-            if (g_pad_poll_cooldown[i] > 0) { g_pad_poll_cooldown[i]--; continue; }
-            XINPUT_STATE st; ZeroMemory(&st, sizeof st);
-            if (pXInputGetState(i, &st) != ERROR_SUCCESS) { g_pad_poll_cooldown[i] = 120; continue; }
-            XINPUT_GAMEPAD *g = &st.Gamepad;
-            float sx = axis_dz(g->sThumbLX / 32767.0f);
-            if (g->wButtons & XINPUT_GAMEPAD_DPAD_LEFT) sx = -1;
-            if (g->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) sx = 1;
-            if (fabsf(sx) > fabsf(steer)) steer = sx;
-            float rt = g->bRightTrigger / 255.0f, lt = g->bLeftTrigger / 255.0f;
-            if (g_swap_pedals) { float t = rt; rt = lt; lt = t; }
-            if (rt < 0.04f) rt = 0;
-            if (lt < 0.04f) lt = 0;
-            if (g->wButtons & XINPUT_GAMEPAD_A) in->pad_a = 1;               /* throttle, or enter on initials */
-            /* directions for menus / initials: d-pad or left stick (with hysteresis) */
-            { static int stick_dir[4][4];   /* [pad][up,down,left,right] */
-              float lx = g->sThumbLX / 32767.0f, ly = g->sThumbLY / 32767.0f;
-              float v[4] = { ly, -ly, -lx, lx };
-              for (int d = 0; d < 4; d++) stick_dir[i][d] = stick_dir[i][d] ? v[d] > 0.35f : v[d] > 0.6f;
-              if ((g->wButtons & XINPUT_GAMEPAD_DPAD_UP) || stick_dir[i][0]) in->nav_up = 1;
-              if ((g->wButtons & XINPUT_GAMEPAD_DPAD_DOWN) || stick_dir[i][1]) in->nav_down = 1;
-              if ((g->wButtons & XINPUT_GAMEPAD_DPAD_LEFT) || stick_dir[i][2]) in->nav_left = 1;
-              if ((g->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) || stick_dir[i][3]) in->nav_right = 1; }
-            if (g->wButtons & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X)) lt = 1;
-            if (g->wButtons & XINPUT_GAMEPAD_B) in->pad_b = 1;               /* back on the Original Mode screens */
-            if (rt > thr) thr = rt;
-            if (lt > brk) brk = lt;
-            if (g->wButtons & (XINPUT_GAMEPAD_RIGHT_SHOULDER | XINPUT_GAMEPAD_Y)) in->turbo = 1;
-            if (g->wButtons & XINPUT_GAMEPAD_START) in->start = 1;
-            if (g->wButtons & XINPUT_GAMEPAD_BACK) in->coin = 1;
-        }
+    /* controllers: the one chosen on the controls screen, or any of them (XInput pads, and the others Windows lists:
+       PlayStation pads and the like). The list is made again when Windows says a device came or went. */
+    if (g_dev_dirty) { g_dev_dirty = 0; devices_scan(1); }
+    static int scan_div, misses;
+    const paddev *d = chosen_dev();
+    sho_pad p;
+    if (sho_ctl.device[0] && (!d || misses > 30) && (++scan_div % 180) == 1) { devices_scan(1); d = chosen_dev(); misses = 0; }   /* not there (yet, or any more): look again every 3 s */
+    if (d) { if (read_dev(d, &p)) { misses = 0; sho_controls_apply_pad(d->kind * 4 + (d->id & 3), &p, menu, in, &steer, &thr, &brk); } else misses++; }
+    else {   /* any (and when the chosen one is unplugged) */
+        for (DWORD i = 0; i < 4; i++) if (read_xinput(i, &p)) sho_controls_apply_pad((int)i, &p, menu, in, &steer, &thr, &brk);
+        for (int i = 0; i < g_ndev; i++) if (g_dev[i].kind == 1 && read_dev(&g_dev[i], &p)) sho_controls_apply_pad(4 + (g_dev[i].id & 3), &p, menu, in, &steer, &thr, &brk);
     }
     in->steer = steer; in->throttle = thr; in->brake = brk;
 }
@@ -508,10 +693,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     GetModuleFileNameA(NULL, g_dir, MAX_PATH);
     char *slash = strrchr(g_dir, '\\'); if (slash) *slash = 0;
     path_join(g_ini, g_dir, "shangon.ini"); path_join(g_nv, g_dir, "shangon.nv");
+    { char lg[MAX_PATH]; path_join(lg, g_dir, "shangon.log"); sho_diag_open(lg); sho_diag("Super Hang-On Ultimate %s (Windows)", SHO_VERSION); }
     write_default_ini();
     char s[64];
     g_fullscreen = ini_int("video", "fullscreen", 1);
-    g_wide = ini_int("video", "widescreen", 1);
+    g_shape = read_shape();
     g_filter = ini_int("video", "filter", 2) % 3;
     g_stretch = ini_int("video", "stretch", 0);
     g_vrr = ini_int("video", "vrr", 0);
@@ -519,6 +705,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     g_deadzone = ini_int("input", "deadzone", 15) / 100.0f;
     g_steer_curve = ini_int("input", "steer_curve", 100) / 100.0f;
     g_swap_pedals = ini_int("input", "swap_pedals", 0);
+    controls_load();
     ini_str("advanced", "cpu", "recompiled", s, sizeof s); sho_recomp = _stricmp(s, "interpreter") != 0;
     if (strstr(cmd, "-window")) g_fullscreen = 0;
     if (strstr(cmd, "-fullscreen")) g_fullscreen = 1;
@@ -554,12 +741,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
 
     if (show_launcher) {
         launcher_settings ls; memset(&ls, 0, sizeof ls);
-        static const char *const views[2] = { "16:9 WIDESCREEN", "4:3 ORIGINAL" };
-        ls.view_names = views; ls.view_count = 2; ls.view_desc = "F9 SWITCHES DURING PLAY";
+        static const char *views[SHO_NSHAPES];
+        for (int i = 0; i < SHO_NSHAPES; i++) views[i] = sho_shapes[i].long_name;
+        ls.view_names = views; ls.view_count = SHO_NSHAPES; ls.view_desc = "F9 SWITCHES DURING PLAY";
         ls.demo_sounds = ini_int("game", "demo_sounds", 1);
         ls.difficulty = ini_int("game", "difficulty", 1) & 3;
         ls.time_adj = ini_int("game", "time", 1) & 3;
-        ls.view = g_wide ? 0 : 1;
+        ls.view = g_shape;
         ls.arrange_music = ini_int("audio", "external_music", 1) != 0;
         ls.md_enhancements = ini_int("megadrive", "enhancements", 0) != 0;
         ls.md_controls = ini_int("megadrive", "controls", 0) != 0;
@@ -581,28 +769,26 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             HRSRC rs = FindResourceA(inst, MAKEINTRESOURCEA(3), MAKEINTRESOURCEA(10));   /* RT_RCDATA */
             HGLOBAL rg = rs ? LoadResource(inst, rs) : NULL;
             if (rg) { png = (const unsigned char *)LockResource(rg); png_len = SizeofResource(inst, rs); }
+            lc_set_controls_host(&g_controls_host);
             lc_begin(&ls, rom_check, png, png_len);
         }
         lc_clock = now_s; lc_present_hook = present_loading;
         g_in_launcher = 1;
+        sync_cursor();
         WORD pad_prev = 0;
         while (g_running && lc_result() == LC_RUNNING) {
             pump_messages();
-            if (pXInputGetState) {   /* a pad: d-pad, A, Start (pads that aren't there are asked again every 2 s) */
-                WORD b = 0;
-                for (DWORD i = 0; i < 4; i++) {
-                    if (g_pad_poll_cooldown[i] > 0) { g_pad_poll_cooldown[i]--; continue; }
-                    XINPUT_STATE st; ZeroMemory(&st, sizeof st);
-                    if (pXInputGetState(i, &st) != ERROR_SUCCESS) { g_pad_poll_cooldown[i] = 120; continue; }
-                    b |= st.Gamepad.wButtons;
-                }
+            {   /* any controller: d-pad, A, Start */
+                sho_pad pp; WORD b = 0;
+                devices_scan(0);
+                if (host_pad_read(-1, &pp)) b = (WORD)pp.buttons;
                 WORD e = (WORD)(b & ~pad_prev); pad_prev = b;
-                if (e & XINPUT_GAMEPAD_DPAD_UP) lc_key(LK_UP);
-                if (e & XINPUT_GAMEPAD_DPAD_DOWN) lc_key(LK_DOWN);
-                if (e & XINPUT_GAMEPAD_DPAD_LEFT) lc_key(LK_LEFT);
-                if (e & XINPUT_GAMEPAD_DPAD_RIGHT) lc_key(LK_RIGHT);
-                if (e & XINPUT_GAMEPAD_A) lc_key(LK_PAD_A);
-                if (e & XINPUT_GAMEPAD_START) lc_key(LK_PAD_START);
+                if (e & (1u << PB_UP)) lc_key(LK_PAD_UP);
+                if (e & (1u << PB_DOWN)) lc_key(LK_PAD_DOWN);
+                if (e & (1u << PB_LEFT)) lc_key(LK_PAD_LEFT);
+                if (e & (1u << PB_RIGHT)) lc_key(LK_PAD_RIGHT);
+                if (e & (1u << PB_A)) lc_key(LK_PAD_A);
+                if (e & (1u << PB_START)) lc_key(LK_PAD_START);
             }
             if (lc_folder_clicked()) {   /* the FOLDER line: open the game folder in Explorer */
                 typedef HINSTANCE (WINAPI *ShellExecuteA_t)(HWND, LPCSTR, LPCSTR, LPCSTR, LPCSTR, INT);
@@ -624,8 +810,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         ini_set_int("game", "demo_sounds", ls.demo_sounds);
         ini_set_int("game", "difficulty", ls.difficulty);
         ini_set_int("game", "time", ls.time_adj);
-        g_wide = ls.view == 0;
-        ini_set_int("video", "widescreen", g_wide);
+        set_shape(ls.view);
         ini_set_int("megadrive", "enhancements", ls.md_enhancements);
         ini_set_int("megadrive", "controls", ls.md_controls);
         ini_set_int("megadrive", "music", ls.md_music);
@@ -673,7 +858,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         sho_md_dev_race(ini_int("dev", "original_race", 0));
         sho_md_set_music(g_md_present && ini_int("megadrive", "enhancements", 0) && ini_int("megadrive", "music", 0));   /* the Mega Drive's own sound driver */
         if (sho_md_music_active()) sho_silence_music(); }                      /* the arcade's songs off: the Mega Drive's play instead */
-    if (g_in_launcher) { lc_load_step(3, 1.0f, "STARTING THE GAME"); lc_present_hook = NULL; lc_end(); g_in_launcher = 0; }
+    if (g_in_launcher) { lc_load_step(3, 1.0f, "STARTING THE GAME"); lc_present_hook = NULL; lc_end(); g_in_launcher = 0; sync_cursor(); }
     memset(g_keys, 0, sizeof g_keys);
     update_title();
     InvalidateRect(g_hwnd, NULL, TRUE);
@@ -686,6 +871,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     double refresh = monitor_refresh();
     if (have_audio) { memset(samples, 0, sizeof samples); audio_submit(samples, 1100); audio_submit(samples, 1100); audio_submit(samples, 1000); }
     double acc = 0, last = now_s(), next_frame = last, audio_frac = 0;
+    sho_pacer pacer; memset(&pacer, 0, sizeof pacer);
+    int audio_target = AUDIO_TARGET, underruns = 0, diag_n = 0; long game_frames = 0, diag_frames = 0; double diag_t = last, diag_t0 = last;
+    sho_diag("display: %s, reported refresh %.2f Hz, %s", g_use_d3d ? "Direct3D 11" : "GDI", refresh, g_vrr ? "VRR (clock paced)" : "vsync");
+    sho_diag("sound: %s", have_audio ? "waveOut 48000 Hz" : "none");
 
     MSG msg;
     while (g_running) {
@@ -707,11 +896,20 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         int frames = 0;
         double t = now_s();
         if (vsync_mode) {
-            period = locked ? (double)k / refresh : 1.0 / SHO_FPS;
-            acc += 1.0 / refresh;
-            /* if presents are not waiting for vblank (minimised, occluded), fall back to the clock */
-            if (t - last < 0.5 / refresh) { wait_until(last + 1.0 / refresh); t = now_s(); }
+            /* if presents are not waiting for vblank at all (minimised, occluded), fall back to the clock */
+            if (t - last < 0.2 / refresh) { wait_until(last + 1.0 / refresh); t = now_s(); }
+            /* how many refreshes really went by, at the rate presents really come at (sho_pace.h): the reported
+               refresh rate isn't always it, and a present can miss one */
+            int was = pacer.adopted;
+            int ticks = sho_pace_step(&pacer, refresh, t - last);
+            double r = pacer.used;
+            if (pacer.adopted != was) sho_diag("pacing: presents come at %.2f Hz, not the reported %.2f: using that", r, refresh);
+            k = (int)(r / 60.0 + 0.5); if (k < 1) k = 1;
+            locked = fabs(r - 60.0 * k) <= 0.012 * 60.0 * k;
+            period = locked ? (double)k / r : 1.0 / SHO_FPS;
+            acc += ticks / r;
             while (acc >= period - 1e-9 && frames < 4) { frames++; acc -= period; }
+            if (acc > period * 4) acc = 0;                 /* fell far behind (a long stall): resync */
         } else {
             period = 1.0 / SHO_FPS;
             if (t < next_frame) { wait_until(next_frame); t = now_s(); }
@@ -727,6 +925,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
               if (!g_paused && start_edge && sho_md_pause_allowed()) { g_paused = 1; g_pause_menu = sho_pause_begin(); ptick = 0; }
               else if (g_paused && g_pause_menu) {
                   int act = sho_pause_update(&in, ptick++);
+                  if (act == 3 || act == 4) { set_shape(g_shape + (act == 3 ? 1 : -1)); act = 0; }   /* DISPLAY: stays paused */
                   if (act) { sho_pause_end(); apply_sound_levels(1); g_paused = 0; g_pause_menu = 0; if (act == 2) reset_to_title(); }
               }
               if (g_paused) in.start = 0; }
@@ -738,15 +937,24 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             if (have_audio) {
                 /* samples for this frame; small correction keeps the device queue near its target */
                 long q = audio_queued();
-                double corr = (double)(AUDIO_TARGET - q) / AUDIO_TARGET * 0.01;
+                if (!g_paused && game_frames > 120 && sho_audio_target_step(q, &audio_target)) {   /* ran dry: more cushion */
+                    underruns++; sho_diag("sound: queue ran dry (%ld samples); target now %d ms", q, audio_target * 1000 / AUDIO_RATE); }
+                double corr = (double)(audio_target - q) / audio_target * 0.01;
                 if (corr > 0.01) corr = 0.01;
                 if (corr < -0.01) corr = -0.01;
                 audio_frac += AUDIO_RATE * period * (1.0 + corr);
                 int n = (int)audio_frac; audio_frac -= n; if (n > 1100) n = 1100;
                 if (g_paused) memset(samples, 0, sizeof samples); else sho_audio(samples, n);
-                if (q < AUDIO_TARGET * 4) audio_submit(samples, n);   /* drop if far too much is queued */
+                if (q < audio_target * 4) audio_submit(samples, n);   /* drop if far too much is queued */
             }
             if (++frames_since_save >= 60 * 60) { save_nvram(); frames_since_save = 0; }
+            game_frames++;
+        }
+        if (t - diag_t >= (diag_n < 2 ? 5.0 : 30.0)) {   /* the log: the speed after 5 and 10 seconds, then every 30 */
+            double fps = (game_frames - diag_frames) / (t - diag_t);
+            if (diag_n++ && !g_paused) sho_diag("%4.0f s: speed %.1f%% (%.2f game frames a second), refresh used %.2f Hz (reported %.2f), sound cushion %d ms, ran dry %d times",
+                                                t - diag_t0, fps / SHO_FPS * 100.0, fps, vsync_mode ? pacer.used : 0.0, refresh, audio_target * 1000 / AUDIO_RATE, underruns);
+            diag_t = t; diag_frames = game_frames;
         }
         present(vsync_mode ? 1 : 0);
     }

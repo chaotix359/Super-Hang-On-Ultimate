@@ -138,11 +138,11 @@ static int text_wrap(int x, int y, const char *t, uint32_t c, int cols, int maxl
 }
 
 /* ------------------------------------------------------------------ the settings */
-enum { O_DEMO, O_DIFF, O_TIME, O_MUSIC, O_VIEW, O_MDE, O_MDC, O_PLAY, NOPT };
-static const char *const names[NOPT] = { "DEMO SOUNDS", "DIFFICULTY", "TIME LIMIT", "MUSIC", "DISPLAY", "MEGA DRIVE ENHANCEMENTS", "APPLY MEGA DRIVE CONTROLS", "PLAY" };
+enum { O_DEMO, O_DIFF, O_TIME, O_MUSIC, O_VIEW, O_MDE, O_MDC, O_CTRL, O_PLAY, NOPT };
+static const char *const names[NOPT] = { "DEMO SOUNDS", "DIFFICULTY", "TIME LIMIT", "MUSIC", "DISPLAY", "MEGA DRIVE ENHANCEMENTS", "APPLY MEGA DRIVE CONTROLS", "CONFIGURE CONTROLS", "PLAY" };
 static const char *const onoff[2] = { "ON", "OFF" }, *const levels[4] = { "EASY", "NORMAL", "HARD", "HARDEST" };
 static const char *const musics[3] = { "REGULAR SOUNDTRACK", "ARRANGE SOUNDTRACK", "MEGA DRIVE MUSIC" };
-static const char *const default_views[3] = { "FIT WINDOW", "16:9 WIDESCREEN", "4:3 ORIGINAL" };
+static const char *const default_views[3] = { "FIT WINDOW", "16:9 WIDESCREEN", "4:3 ORIGINAL" };   /* (each frontend passes its own list) */
 
 static launcher_settings S;        /* a copy of the frontend's settings (names, folder, checks) */
 static launcher_rom_check_fn check_rom;
@@ -155,10 +155,10 @@ static float load_frac; static char load_msg[64];
 static int nviews(void) { return S.view_names && S.view_count > 0 ? S.view_count : 3; }
 static const char *view_name(int v) { return S.view_names && S.view_count > 0 ? S.view_names[v % S.view_count] : default_views[v % 3]; }
 static int music_md_ok(void) { return md_ok && val[O_MDE]; }
-static int nvals(int o) { return o == O_DEMO || o == O_MDE || o == O_MDC ? 2 : o == O_MUSIC ? 3 : o == O_VIEW ? nviews() : o == O_PLAY ? 1 : 4; }
+static int nvals(int o) { return o == O_DEMO || o == O_MDE || o == O_MDC ? 2 : o == O_MUSIC ? 3 : o == O_VIEW ? nviews() : o == O_PLAY || o == O_CTRL ? 1 : 4; }
 static int enabled(int o) { return (o == O_MDE || o == O_MDC) ? md_ok : o == O_PLAY ? rom_ok : 1; }
 static void change(int o, int d) {
-    if (!enabled(o) || o == O_PLAY) return;
+    if (!enabled(o) || o == O_PLAY || o == O_CTRL) return;
     int n = nvals(o);
     if (o == O_MDE || o == O_MDC) { val[o] = !val[o]; if (o == O_MDE && !music_md_ok() && val[O_MUSIC] == 2) val[O_MUSIC] = last_nonmd; return; }
     int v = val[o];
@@ -189,6 +189,7 @@ static const char *desc(int o) {
     case O_VIEW: return S.view_desc ? S.view_desc : "F9 SWITCHES DURING PLAY";
     case O_MDE: return md_ok ? "ORIGINAL MODE: PRESS START ON THE TITLE SCREEN TO CHOOSE IT" : "NEEDS THE SUPER HANG-ON (WORLD) MEGA DRIVE ROM IN THE GAME FOLDER";
     case O_MDC: return md_ok ? "MEGA DRIVE STEERING, IN ARCADE AND ORIGINAL MODE" : "NEEDS THE SUPER HANG-ON (WORLD) MEGA DRIVE ROM IN THE GAME FOLDER";
+    case O_CTRL: return "CONTROLLER BUTTONS AND KEYBOARD KEYS: ENTER OR A CLICK OPENS IT";
     case O_PLAY: return rom_ok ? "ENTER, A OR START TO PLAY" : "PUT SHANGON.ZIP IN THE GAME FOLDER";
     }
     return "";
@@ -214,9 +215,13 @@ static void refresh(void) {
 #define FOLDER_Y (PY + PH - 25)
 #define VER_CX 556                 /* the version: centred under the right-hand bike's rear wheel */
 #define VER_Y 344
-static int row_y(int i) { return i < O_MDE ? PY + 10 + i * 12 : i < O_PLAY ? PY + 76 + (i - O_MDE) * 12 : PY + 104; }
+static int row_y(int i) { return i < O_MDE ? PY + 8 + i * 11 : i < O_CTRL ? PY + 66 + (i - O_MDE) * 11 : i == O_CTRL ? PY + 90 : PY + 104; }
+
+#include "launcher_controls.h"   /* the CONTROLS screen */
+
 
 static void draw(void) {
+    if (page == 1) { draw_controls(); return; }
     memset(cv, 0, sizeof cv);
     fill(PX, PY, PW, PH, PANEL);
     for (int i = 0; i < NOPT; i++) {
@@ -232,6 +237,7 @@ static void draw(void) {
         text(X0, y, names[i], !en ? DIM : sel ? YELLOW : WHITE, 1);
         const char *v = value_text(i);
         if (i == O_MDE || i == O_MDC) { text(BX, y, v, !en ? DIM : sel ? YELLOW : WHITE, 1); continue; }
+        if (i == O_CTRL) { if (sel) text(X0 + text_w(names[i], 1) + 6, y, ">", YELLOW, 1); continue; }
         if (sel) { text(VX - 10, y, "<", YELLOW, 1); text(VX + text_w(v, 1) + 2, y, ">", YELLOW, 1); }
         text(VX, y, v, sel ? YELLOW : WHITE, 1);
     }
@@ -288,7 +294,7 @@ void lc_begin(launcher_settings *s, launcher_rom_check_fn check, const unsigned 
     val[O_MUSIC] = s->md_music && s->md_enhancements ? 2 : last_nonmd;
     val[O_VIEW] = s->view >= 0 && s->view < nviews() ? s->view : 0;
     val[O_MDE] = s->md_enhancements != 0; val[O_MDC] = s->md_controls != 0;
-    result = LC_RUNNING; folder_click = 0; loading = 0; last_check = -1;
+    result = LC_RUNNING; folder_click = 0; loading = 0; last_check = -1; page = 0; pop = 0; wiz = -1; cap_a = -1;
     refresh();
     cur = rom_ok ? O_PLAY : O_DEMO;
     if (!bg) bg = png_decode(png, png_len, &bg_w, &bg_h);
@@ -297,6 +303,9 @@ void lc_begin(launcher_settings *s, launcher_rom_check_fn check, const unsigned 
 }
 void lc_key(int k) {
     if (result != LC_RUNNING || loading) return;
+    if (page == 1) { controls_key(k); draw(); return; }
+    if (k == LK_PAD_UP) k = LK_UP; else if (k == LK_PAD_DOWN) k = LK_DOWN; else if (k == LK_PAD_LEFT) k = LK_LEFT; else if (k == LK_PAD_RIGHT) k = LK_RIGHT;
+    if (cur == O_CTRL && (k == LK_ENTER || k == LK_SPACE || k == LK_PAD_A || k == LK_RIGHT)) { controls_open(); draw(); return; }
     switch (k) {
     case LK_UP: cur = (cur + NOPT - 1) % NOPT; break;
     case LK_DOWN: cur = (cur + 1) % NOPT; break;
@@ -310,8 +319,10 @@ void lc_key(int k) {
 }
 void lc_click(int mx, int my) {
     if (result != LC_RUNNING || loading) return;
+    if (page == 1) { controls_click(mx, my); draw(); return; }
     int i = hit(mx, my);
     if (i == O_PLAY) { cur = i; if (rom_ok) result = LC_PLAY; }
+    else if (i == O_CTRL) { cur = i; controls_open(); }
     else if (i >= 0 && (cur == i || i == O_MDE || i == O_MDC)) { cur = i; change(i, mx < VX && i != O_MDE && i != O_MDC ? -1 : 1); }
     else if (i >= 0) cur = i;
     else if (my >= FOLDER_Y - 2 && my < FOLDER_Y + 10 && mx >= PX && mx < PX + PW && S.game_dir) folder_click = 1;
@@ -322,6 +333,7 @@ void lc_tick(double now) {
     if (last_check < 0) last_check = now;
     if (now - last_check > 2.5 && (!rom_ok || !md_ok) && result == LC_RUNNING) { refresh(); last_check = now; }   /* files added while it is up */
     blink = ((long)(now * 3.0)) & 1;
+    if (page == 1) { ctl_now = now; controls_tick(); }
     draw();
 }
 int lc_result(void) { return result; }

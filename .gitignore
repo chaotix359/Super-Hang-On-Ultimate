@@ -54,3 +54,6 @@ installer/mac/output/
 Thumbs.db
 .vscode/
 .idea/
+
+# Linux release zip (installer/linux/build-release.py)
+installer/linux/output/

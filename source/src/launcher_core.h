@@ -6,10 +6,13 @@
 #define LAUNCHER_CORE_H
 #include <stddef.h>
 #include <stdint.h>
+#include "sho_controls.h"
 
 /* fills a one-line status and a detail line; returns 1 if the ROM is present and correct */
 typedef int (*launcher_rom_check_fn)(char *msg, int msglen, char *detail, int detaillen);
-enum { VIEW_FIT, VIEW_WIDE, VIEW_43 };   /* Linux and Mac display choices (Windows: 0 = 16:9, 1 = 4:3) */
+/* Linux and Mac display modes: 0 = fit the window/screen, then the shapes of sho_views.h in F9 order (mode m = shape m - 1);
+   Windows: the shapes alone (mode = shape) */
+enum { VIEW_FIT = 0, VIEW_WIDE = 1, VIEW_43 = 6, VIEW_COUNT = 7 };
 typedef struct {
     int demo_sounds, difficulty, time_adj;
     int view;                   /* index into view_names */
@@ -28,8 +31,23 @@ typedef struct {
 #define LC_CH 360
 #define LC_IW 1920                 /* the launcher picture, and the finished image */
 #define LC_IH 1080
-enum { LK_UP, LK_DOWN, LK_LEFT, LK_RIGHT, LK_ENTER, LK_SPACE, LK_ESC, LK_PAD_A, LK_PAD_START };
+/* keys for lc_key: the keyboard's, and a pad's d-pad / A / Start (kept apart: on the controls screen the pad is being
+   tried out, not moving the cursor); LK_TAB switches the controls screen's tabs, LK_CLEAR (Delete, Backspace) empties a box */
+enum { LK_UP, LK_DOWN, LK_LEFT, LK_RIGHT, LK_ENTER, LK_SPACE, LK_ESC, LK_PAD_A, LK_PAD_START,
+       LK_PAD_UP, LK_PAD_DOWN, LK_PAD_LEFT, LK_PAD_RIGHT, LK_TAB, LK_CLEAR };
 enum { LC_RUNNING = -1, LC_QUIT = 0, LC_PLAY = 1 };
+
+/* The CONTROLS screen (launcher_controls.h) needs these from the frontend. Set before lc_begin. */
+typedef struct {
+    int (*pad_count)(void);                    /* the controllers the system has now */
+    const char *(*pad_name)(int i);
+    int (*pad_read)(int i, sho_pad *out);      /* that controller's state (sho_pad_finish done); i = -1: any of them. 0 = none there */
+    const char *(*key_name)(int code);         /* a key code's name for the keyboard tab */
+    void (*save)(void);                        /* sho_ctl changed: write it to shangon.ini */
+} lc_controls_host;
+void lc_set_controls_host(const lc_controls_host *h);
+int  lc_wants_key(void);                       /* the keyboard tab is waiting for a key: give the next key press to lc_raw_key */
+void lc_raw_key(int code);                     /* (Esc still goes to lc_key: it cancels) */
 
 /* png: the launcher picture (res/launcher_bg.png, 1920x1080), built into each program */
 void lc_begin(launcher_settings *s, launcher_rom_check_fn check, const unsigned char *png, size_t png_len);

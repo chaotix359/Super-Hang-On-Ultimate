@@ -384,6 +384,28 @@ Original Mode race: arcade stop commands (00,83,8e,92,9e,9f) no longer reach the
   Cmd+Q in the launcher = Esc. Not compiled in the Linux workspace: build on a Mac (build_mac.sh) to check.
 - Removed: win32_launcher.c/.h, mac_launcher.m/.h, res/launcher_art.*. Version: `sho_version.h` (shown under the bike).
 
+## 0.9.33
+- Display shapes: `sho_views.h` (name, launcher name, aspect, width; F9 order 16:9 428, 18:9 480, 19:9 506, 20:9 534,
+  21:9 568 (64:27), 4:3 320). SHO_MAX_W 576. Windows: `g_shape`, ini [video] aspect= (+ widescreen= for older versions),
+  Shift+F9 back. Linux/Mac: mode 0 = fit, mode m = shape m-1 (VIEW_COUNT 7); Mac Display menu Cmd+1..7 (one `viewMode:`
+  action, the item's tag = mode). Presenters use the shape's own aspect (fills a screen of that shape exactly).
+- `sho_set_view_width` redraws the current frame when the width changes (`redraw_frame`: sho_video_render + md_compose;
+  the video state is only drawn again, nothing runs), and while the pause menu is up refreshes `pause_keep` and draws
+  the menu over it (md_pause_menu with in = NULL). This fixed the scrambled paused picture after F9.
+- Pause menu: CONTINUE / DISPLAY / SOUND / EXIT. DISPLAY: left/right = act 4/3, select = 3; the frontend switches the
+  shape and stays paused; `sho_pause_set_display(name)` gives the line its text (set before changing the width).
+- Goal sequence: positions and the SPEED patch use the captured frame's own margin (fin_w), so a shape change during it
+  is harmless.
+- Backdrops: the right-hand margin mirrors the left page's end (`vx = 1023 - vx`) instead of repeating its last column.
+- Class / music select (sho_menu_last_frame recent): the right-hand margin is filled with each row's x=0 colour (their
+  tilemaps are one page wide; the left margin already comes out plain).
+- Test hooks: PAUSEKEYS=f:k,... (d u l r a) and PAUSEW=f:w,... during PAUSEAT.
+
+## Linux release zip
+- `python3 installer/linux/build-release.py` -> `installer/linux/output/SuperHangOnUltimate-Linux-<version>.zip` (version from
+  sho_version.h): the source + install.sh + INSTALL-LINUX.txt, Unix permissions kept, the same no-ROM-code checks as the
+  Mac installer (also refuses built ELF programs). Tested end to end: unzip, install.sh with shangon.zip -> SUCCESS, PASSED.
+
 ## 0.9.32
 - Loading bar at FOLDER_Y - 24 (the gap under the ROM lines; clear of them even with a two-line Mega Drive ROM detail); the key help line is left out while loading.
 
@@ -465,3 +487,32 @@ Original Mode race: arcade stop commands (00,83,8e,92,9e,9f) no longer reach the
   `.desktop` entry and `~/.local/bin/superhangon`.
 - Checked under Xvfb: launcher (keyboard), title, mode choice, Original Mode screens, an arcade race with the keyboard,
   audio output (SDL disk driver). Not checked here: real gamepads, a real compositor's vsync, Wayland, ARM64.
+
+## 0.9.34
+- Controls: `sho_controls.c/.h` (shared). Frontends read each pad into `sho_pad` (16 Xbox-style buttons, left stick,
+  triggers); `sho_ctl.pad[]` gives each button an ACT_x, `sho_ctl.key[KA_x][4]` the keys (frontend key codes: VK,
+  SDL scancodes, macOS key codes), `sho_ctl.device` the chosen pad's name ("" = any; a missing one falls back to any).
+  `sho_controls_apply_pad` turns one pad into sho_input; `sho_key_action_down` / `sho_key_is_action` for keys.
+  ini: [pad] actions= (16 numbers, A B X Y LB RB LT RT Back Start L3 R3 Up Down Left Right), device=,
+  [keys_windows] / [keys_linux] / [keys_mac] keys= (8 groups of 4 codes; -1 = none). [input] swap_pedals only changes
+  the defaults now.
+- Launcher: row CONFIGURE CONTROLS; the screen is `launcher_controls.h` (included by launcher_core.c). The frontend
+  gives `lc_controls_host` (pad_count / pad_name / pad_read / key_name / save) before lc_begin, sends pad d-pad as
+  LK_PAD_*, Tab as LK_TAB, Delete/Backspace as LK_CLEAR, and while `lc_wants_key()` passes the next key to `lc_raw_key`.
+- Devices. Windows: XInput slots ("XBOX CONTROLLER n") + WinMM joysticks that are not XInput (RawInput "IG_" check),
+  named from the registry OEMName. Linux: SDL game controllers and plain joysticks, SDL's names. Mac: GCController
+  (vendorName) then the IOKit HID pads as "<name> (HID)"; with ANY the HID ones only count while the framework
+  delivers nothing (as before).
+- Pacing: `sho_pace.h`. `sho_pace_step(&p, reported_hz, present_to_present_seconds)` returns the refreshes that went
+  by; it keeps an average of the time of one refresh and, once that is over 3% off the reported rate for about a
+  second, uses the measured rate. Windows and Linux vsync paths use it (the Mac's display link already counts real
+  refreshes). `sho_audio_target_step` raises the sound queue target by 800 samples (to 9600) when it runs under 300.
+- Controls screen and pads: `controls_pad_nav` (from controls_tick, every lc_tick) reads pad_read(-1) itself: edges and
+  repeats of d-pad / stick, A, B -> `controls_nav(key, pad=1)`; the frontends' LK_PAD_* are ignored on that screen.
+- Windows "any controller" = the four XInput slots + the WinMM entries of g_dev (rescanned on WM_DEVICECHANGE via
+  g_dev_dirty, and every 2 s in the launcher). WinMM pads with vendor 054C use the Sony button order; a WinMM stick
+  counts only after it has been seen centred once.
+- Pointer: hidden only when fullscreen and not in the launcher (Windows `sync_cursor`, Mac pump_events, Linux launcher_run).
+- `sho_diag_open` / `sho_diag`: shangon.log (5 s, 10 s, then every 30 s: speed, refresh used, sound cushion, dry count).
+- Linux launcher development hooks: LAUNCHER_KEYS=udlrestk / c"x,y," with LAUNCHER_SHOT.
+- Mac parts were written without a Mac to compile on: build with build_mac.sh and fix what the compiler reports.

@@ -6,6 +6,9 @@
 #include <math.h>
 #include <time.h>
 #include "sho_core.h"
+#include "sho_views.h"
+const char *sho_test_shape_name(int i) { return sho_shapes[i % SHO_NSHAPES].name; }
+int sho_test_shape_width(int i) { return sho_shapes[i % SHO_NSHAPES].width; }
 #include "sho_internal.h"
 #include "sho_music.h"
 #include "sho_md.h"
@@ -171,7 +174,21 @@ int main(int argc, char **argv) {
         if (getenv("HOLDCOIN") && f >= atoi(getenv("HOLDCOIN")) && f < atoi(getenv("HOLDCOIN")) + 100) in.coin = 1;
         if (getenv("PAUSEAT") && f >= atoi(getenv("PAUSEAT"))) { static int pt, done_; if (done_) goto run;
             if (f == atoi(getenv("PAUSEAT"))) printf("pause begin %d\n", sho_pause_begin());
+            {   /* test: PAUSEKEYS=f:k,... presses d(own) u(p) l(eft) r(ight) a during the pause; PAUSEW=f:w,... sets the width */
+                const char *pk = getenv("PAUSEKEYS"); char kb[16];
+                for (const char *q = pk; q && *q; ) { int ff = atoi(q); const char *c_ = strchr(q, ':'); if (!c_) break; if (ff == f) { char k = c_[1];
+                    in.nav_down = k == 'd'; in.nav_up = k == 'u'; in.nav_left = k == 'l'; in.nav_right = k == 'r'; in.pad_a = k == 'a'; }
+                    q = strchr(c_, ','); if (q) q++; }
+                const char *pw = getenv("PAUSEW");
+                for (const char *q = pw; q && *q; ) { int ff = atoi(q); const char *c_ = strchr(q, ':'); if (!c_) break; if (ff == f) sho_set_view_width(atoi(c_ + 1)); q = strchr(c_, ','); if (q) q++; }
+                (void)kb;
+            }
+            static int shape_i;
+            { extern const char *sho_test_shape_name(int); sho_pause_set_display(sho_test_shape_name(shape_i)); }
             int act = sho_pause_update(&in, pt++); int m, e; sho_get_sound_levels(&m, &e);
+            if (act == 3 || act == 4) {   /* the display shape: the next / previous one (as the frontends do) */
+                extern int sho_test_shape_width(int); shape_i = (shape_i + (act == 3 ? 1 : 5)) % 6; sho_pause_set_display(sho_test_shape_name(shape_i)); sho_set_view_width(sho_test_shape_width(shape_i));
+                printf("f%d display -> width %d\n", f, sho_width()); act = 0; }
             if (act) { printf("f%d pause action %d levels %d %d\n", f, act, m, e); sho_pause_end(); done_ = 1; }
             if (getenv("SHOTS") && f % atoi(getenv("SHOTS")) == 0) { char p2[64]; snprintf(p2, sizeof p2, "shot_%05d.ppm", f); write_ppm(p2); } continue; }
         run:

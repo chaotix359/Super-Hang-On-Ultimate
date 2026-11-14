@@ -2,7 +2,7 @@
 """
 Builds SuperHangOnUltimate-Mac-Installer-<version>.zip  (runs on Windows, Mac or Linux - Python 3, no other tools)
 
-    python3 installer/mac/build-installer.py [--version 0.9.32]
+    python3 installer/mac/build-installer.py [--version 0.9.34]
 
 The zip holds "Install Super Hang-On Ultimate.app": a small launcher + the project source + install.sh. On the user's Mac it asks for the
 arcade ROM, builds the game from it (Apple's Command Line Tools provide the compiler) and installs it.
@@ -117,7 +117,7 @@ If something goes wrong, the log is ~/Library/Logs/SuperHangOn-install.log
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--version", default="0.9.32"); a = ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument("--version", default="0.9.34"); a = ap.parse_args()
     files = collect(); check(files)
     pl = payload(files)
     install = open(os.path.join(HERE, "install.sh"), "rb").read().replace(b"\r\n", b"\n").replace(b"@VERSION@", a.version.encode())

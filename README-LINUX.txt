@@ -1,8 +1,8 @@
-SUPER HANG-ON ULTIMATE - NATIVE LINUX BUILD   v0.9.32 alpha (Linux 7)
+SUPER HANG-ON ULTIMATE - NATIVE LINUX BUILD   v0.9.34 alpha (Linux 9)
 Native Port + Mega Drive Original Mode Mod
 ====================================================================
 
-The same game as the Windows and Mac v0.9.32 alpha (recompiled C, Original Mode, Mega Drive options,
+The same game as the Windows and Mac v0.9.34 alpha (recompiled C, Original Mode, Mega Drive options,
 arranged soundtrack), for 64-bit Linux desktops with SDL2 (tested on x86-64; ARM64 should build the same
 way but has not been tried). README.txt is the full manual;
 this file lists what is different on Linux.
@@ -13,10 +13,10 @@ WHAT'S DIFFERENT ON LINUX
   over the Super Hang-On Ultimate picture, in the arcade's own text font (read from your shangon.zip; until the ROM
   is found, look-alike letters stand in). After PLAY a loading bar shows what the game is getting ready (the
   arranged songs take a moment to decode; Original Mode's screens and courses are made from the Mega Drive ROM,
-  usually while you are still on the settings). Display offers Fit window, 16:9 and 4:3.
+  usually while you are still on the settings). Display offers Fit window, 16:9, 18:9, 19:9, 20:9, 21:9 and 4:3.
 * "Fit window" display (default): the picture takes the shape of your window or screen (as "Fit screen" on
   the Mac) - 16:9 on a 16:9 monitor, a little narrower on 16:10 laptops, up to the widest the game draws on
-  ultrawide screens, with the HUD at its edges. 16:9 widescreen and 4:3 original are still there.
+  ultrawide screens, with the HUD at its edges. The fixed shapes (16:9, 18:9, 19:9, 20:9, 21:9, 4:3) are there too.
 * Fullscreen is borderless fullscreen on the desktop's own resolution. F11 or Alt+Enter toggle it; Esc
   leaves it. Close the window to quit (high scores and settings are saved first).
 * Gamepads: anything SDL knows - Xbox, PlayStation, Switch Pro, 8BitDo, GameSir, Steam Deck controls and many
@@ -29,6 +29,14 @@ WHAT'S DIFFERENT ON LINUX
 
 KEYS
 ----
+  These are the defaults: CONFIGURE CONTROLS on the launcher changes the keys for steering, accelerate, brake, turbo,
+  coin, start and pause ([keys_linux] in shangon.ini), what each controller button does, and which controller is used.
+  Its DEVICE list is SDL's: every controller SDL knows the layout of (Xbox, PlayStation, Switch Pro, 8BitDo, Steam
+  Deck...) and plain joysticks (read as buttons 1-13 = A B X Y LB RB Back Start - L3 R3 LT RT; [pad] map= still
+  renumbers A B X Y RB Back Start).
+  If the game ever runs too slow, too fast or with broken-up sound, shangon.log in the game folder says what the
+  display and sound were doing.
+
   Steer               Left / Right  (or A / D)
   Accelerate          Up, Z, W or Ctrl
   Brake               Down, X or S
@@ -37,7 +45,7 @@ KEYS
   Pause               P  (Start pauses during an Original Mode race, with the PAUSE menu)
   Original Mode menus arrows move, Z or Space select, Backspace or X back
   Back to title       F3
-  Display / filter    F9 (fit window, 16:9, 4:3) / F8 (sharp, smooth, sharp-bilinear)
+  Display / filter    F9 (fit window, 16:9, 18:9, 19:9, 20:9, 21:9, 4:3; Shift+F9 back) / F8 (sharp, smooth, sharp-bilinear)
   Fullscreen          F11 or Alt+Enter; Esc leaves it
   Test / service      F2 / 9
   Development keys    Ctrl+1..7 always start that Original Mode race, Ctrl+0 off; on the Original Mode

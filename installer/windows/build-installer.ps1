@@ -10,7 +10,7 @@
   ROM (src\gen, recomp\overrides), a ROM, or a built program ends up in what would be packaged.
 #>
 param(
-    [string]$Version   = "0.9.32",
+    [string]$Version   = "0.9.34",
     [string]$Iscc      = "",
     [string]$PythonUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
     [string]$LlvmUrl   = "https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-ucrt-x86_64.zip",

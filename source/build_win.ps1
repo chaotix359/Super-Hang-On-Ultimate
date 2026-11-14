@@ -12,7 +12,7 @@ try {
     New-Item -ItemType Directory -Path 'build\win' -Force | Out-Null
     (Get-ChildItem 'recomp\overrides\*.c' | Sort-Object Name | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n" | Set-Content -LiteralPath 'build\win\overrides_all.c' -Encoding utf8
     $sources = @('src\rc_runtime.c','src\gen\main_rc.c','src\gen\sub_rc.c','build\win\overrides_all.c','src\sho_core.c','src\sho_video.c','src\sho_music.c','src\sho_md.c','src\sho_mdgfx.c','src\sho_mdcourse.c','src\sho_mdsnd.c','src\third_party\musashi\m68kcpu.c','src\third_party\musashi\m68kops.c','src\third_party\musashi\m68kdasm.c','src\third_party\musashi\softfloat\softfloat.c','src\third_party\z80\z80.c','src\third_party\nukedopn2\ym3438.c','src\third_party\nukedopm\opm.c','src\third_party\puff\puff.c')
-    if ($Test) { $sources += 'src\test_main.c' } else { $sources += @('src\win32_main.c','src\launcher_core.c','src\win32_d3d11.c') }
+    if ($Test) { $sources += 'src\test_main.c' } else { $sources += @('src\win32_main.c','src\launcher_core.c','src\sho_controls.c','src\win32_d3d11.c') }
     $objects = foreach ($source in $sources) {
         $obj = Join-Path 'build\win' ([IO.Path]::GetFileNameWithoutExtension($source) + '.o')
         & $cc -O2 -DNDEBUG -fno-strict-aliasing -w -Isrc -c $source -o $obj

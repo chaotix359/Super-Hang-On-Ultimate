@@ -778,7 +778,7 @@ static void finish_bike_sprite(void) {
     if (z < 0) z = 0; if (z > 31) z = 31;
     int h = Ha * 32 / (32 + z), pitch = bike_tier[t].d2 & 0xff;
     int w = pitch * 4 * (64 - z) / 64; if (w < 1) w = 1;
-    int xo = (sho_video_width() - SHO_W) / 2, left = (int)(cx - w / 2.0f + 0.5f), top = bottom - h;
+    int xo = (fin_w - SHO_W) / 2, left = (int)(cx - w / 2.0f + 0.5f), top = bottom - h;   /* (positions are in the captured frame's pixels: right even if the width changes during the goal) */
     if (top < 0) top = 0;
     uint16_t *e = sho_video_extra_sprites[0];
     e[0] = (uint16_t)((bottom & 0xff) << 8 | (top & 0xff)); e[1] = (uint16_t)(left + 184 - xo);
@@ -1294,7 +1294,7 @@ static void md_race_hud(void) {
         snprintf(t, sizeof t, "%d", be16r(M->subram, 0x78) * 324 / 279);
         n = (int)strlen(t); col = 33 - n + 1;
         for (int i = 0; i < n; i++) hud_glyph((col + i) * 8 + xr, 16, t[i], mdhud->pal[3]);
-    } else for (int y = 8; y < 24; y++) for (int x = 22 * 8; x < 320; x++) px(XO + x + xr, y, fin_bg[y * fin_w + XO + x + xr]);   /* SPEED goes (the road behind it as it was) */
+    } else for (int y = 8; y < 24; y++) for (int x = 22 * 8; x < 320; x++) px(XO + x + xr, y, fin_bg[y * fin_w + (fin_w - SHO_W) + x]);   /* SPEED goes (the road behind it as it was) */
     if (broken_part >= 0 && mdgfx && mdgfx->ok) {                    /* the Mega Drive's warning lines under the HUD */
         const char *m = broken_msg[broken_part];
         if (broken_part != P_BRAKE && broken_part != P_MUFFLER && (sho_frame_no / 16) % 2 == 0) mt(16, 5, "RETIRE?", MDP_GREEN);
@@ -1542,12 +1542,13 @@ static void md_draw_confirm(void) {
 /* Mega Drive mode pause: the Mega Drive's own "P A U S E" (its yellow font, letters 16 pixels apart, at
    (120,112) on its screen), blinking 48 frames on, 48 off as on the Mega Drive */
 int sho_md_pause_allowed(void) { return cfg_enh && md_ok() && game_state() == 2 && playing() && !overlay_phase(phase); }
-/* pause menu under the blinking PAUSE: CONTINUE / SOUND / EXIT, and a sound page with music and sound
-   effect levels (0-10), in the Mega Drive font: highlighted line yellow with the ">" cursor, others white */
+/* pause menu under the blinking PAUSE: CONTINUE / DISPLAY / SOUND / EXIT (DISPLAY steps through the display shapes
+   with left/right or select, done by the frontend), and a sound page with music and sound effect levels (0-10), in
+   the Mega Drive font: highlighted line yellow with the ">" cursor, others white */
 static int pm_page, pm_cur, pm_prev_nav[6];
 void md_pause_reset(void) { pm_page = 0; pm_cur = 0; for (int i = 0; i < 6; i++) pm_prev_nav[i] = 1; }
 static int pm_tick;
-/* the menu is centred on the screen: PAUSE at y 80, options at y 104/120/136 (block centred on line 112),
+/* the menu is centred on the screen: PAUSE at y 80, options at y 104/120/136/152,
    each line centred on x 160 to the pixel; the cursor sits left of the text without moving it */
 static void pm_text(int x, int y, const char *s, int pal) { for (; *s; s++, x += 8) md_chr(x, y, *s, pal); }
 static void pm_line(int y, const char *s, int sel) {
@@ -1569,28 +1570,44 @@ static void pm_level(int y, const char *name, int v, int sel) {
     if (v > 0) md_chr_mirror(x + 8 * 8, y, '>', pal);
     if (v < 10) md_chr(x + 13 * 8, y, '>', pal);
 }
-int md_pause_menu(uint32_t *fb, int width, int tick, const sho_input *in, int *music, int *sfx) {
+/* the DISPLAY line, DISPLAY  < 16:9 >, laid out like a level line (the shapes wrap round, so both arrows always show) */
+static void pm_choice(int y, const char *name, const char *v, int sel) {
+    char b[32]; snprintf(b, sizeof b, "%-7s   %-4s  ", name, v);
+    int x = 160 - (int)strlen(b) * 4, pal = sel ? MDP_YELLOW : MDP_WHITE;
+    pm_text(x, y, b, pal);
+    if (sel && (pm_tick / 16) % 4 != 3) md_chr(x - 16, y, '>', MDP_WHITE);
+    md_chr_mirror(x + 8 * 8, y, '>', pal);
+    md_chr(x + 15 * 8, y, '>', pal);
+}
+int md_pause_menu(uint32_t *fb, int width, int tick, const sho_input *in, int *music, int *sfx, const char *display) {
     FB = fb; FW = width; XO = (width - SHO_W) / 2;
-    int now[6] = { in->nav_up, in->nav_down, in->nav_left, in->nav_right, in->pad_a || in->start, in->pad_b }, e[6];
-    for (int i = 0; i < 6; i++) { e[i] = now[i] && !pm_prev_nav[i]; pm_prev_nav[i] = now[i]; }
+    int now[6] = { 0 }, e[6] = { 0 };
+    if (in) {   /* (in = NULL: just draw it again, e.g. at a new width) */
+        now[0] = in->nav_up; now[1] = in->nav_down; now[2] = in->nav_left; now[3] = in->nav_right; now[4] = in->pad_a || in->start; now[5] = in->pad_b;
+        for (int i = 0; i < 6; i++) { e[i] = now[i] && !pm_prev_nav[i]; pm_prev_nav[i] = now[i]; }
+    }
     int act = 0;
-    if (pm_page == 0) {
-        if (e[0]) pm_cur = (pm_cur + 2) % 3;
-        if (e[1]) pm_cur = (pm_cur + 1) % 3;
+    if (!in) {}
+    else if (pm_page == 0) {   /* 0 CONTINUE, 1 DISPLAY, 2 SOUND, 3 EXIT */
+        if (e[0]) pm_cur = (pm_cur + 3) % 4;
+        if (e[1]) pm_cur = (pm_cur + 1) % 4;
         if (e[5]) act = 1;                                    /* back = continue */
-        if (e[4]) { if (pm_cur == 0) act = 1; else if (pm_cur == 1) { pm_page = 1; pm_cur = 0; } else act = 2; }
+        if (pm_cur == 1 && e[2]) act = 4;                     /* the previous display shape */
+        if (pm_cur == 1 && e[3]) act = 3;                     /* the next one */
+        if (e[4]) { if (pm_cur == 0) act = 1; else if (pm_cur == 1) act = 3; else if (pm_cur == 2) { pm_page = 1; pm_cur = 0; } else act = 2; }
     } else {
         if (e[0]) pm_cur = (pm_cur + 2) % 3;
         if (e[1]) pm_cur = (pm_cur + 1) % 3;
         int *lv = pm_cur == 0 ? music : pm_cur == 1 ? sfx : NULL;
         if (lv && e[2] && *lv > 0) (*lv)--;
         if (lv && e[3] && *lv < 10) (*lv)++;
-        if (e[5] || (e[4] && pm_cur == 2)) { pm_page = 0; pm_cur = 1; }
+        if (e[5] || (e[4] && pm_cur == 2)) { pm_page = 0; pm_cur = 2; }
     }
     if (!((tick / 48) & 1)) { static const char word[] = "PAUSE"; for (int i = 0; word[i]; i++) md_chr(124 + i * 16, 80, word[i], MDP_YELLOW); }   /* 72 px wide, centred */
     pm_tick = tick;
     if (pm_page == 0) {
-        pm_line(104, "CONTINUE", pm_cur == 0); pm_line(120, "SOUND", pm_cur == 1); pm_line(136, "EXIT", pm_cur == 2);
+        pm_line(104, "CONTINUE", pm_cur == 0); pm_choice(120, "DISPLAY", display ? display : "", pm_cur == 1);
+        pm_line(136, "SOUND", pm_cur == 2); pm_line(152, "EXIT", pm_cur == 3);
     } else {
         pm_level(104, "MUSIC", *music, pm_cur == 0); pm_level(120, "EFFECTS", *sfx, pm_cur == 1); pm_line(136, "BACK", pm_cur == 2);
     }

@@ -9,7 +9,7 @@
 
 #define SHO_W 320
 #define SHO_H 224
-#define SHO_MAX_W 432            /* widest framebuffer (16:9 = 428) */
+#define SHO_MAX_W 576            /* widest framebuffer (16:9 = 428, 21:9 = 568; a 2.4:1 screen) */
 #define SHO_WIDE_W 428           /* 16:9 at the arcade monitor's pixel shape */
 #define SHO_FPS 60.05460   /* 25.1748MHz/4 / (400 x 262) */
 
@@ -44,10 +44,16 @@ void sho_run_frame(void);
 /* sho_width() x 224 pixels, 0x00RRGGBB (320 wide in 4:3 mode, SHO_WIDE_W in 16:9, or the sho_set_view_width width) */
 const uint32_t *sho_framebuffer(void);
 /* Mega Drive mode pause menu: begin (0 = not allowed now), update every paused frame (returns 0 = stay,
-   1 = continue, 2 = exit to the title screen), end on resuming */
+   1 = continue, 2 = exit to the title screen, 3 / 4 = next / previous display shape: the frontend switches it and
+   stays paused), end on resuming. sho_pause_set_display: the display shape's name for the menu's DISPLAY line. */
 int sho_pause_begin(void);
 int sho_pause_update(const sho_input *in, int tick);
 void sho_pause_end(void);
+void sho_pause_set_display(const char *name);
+
+/* a small log for problem reports: sho_diag_open("<game folder>/shangon.log") once, then sho_diag(printf-style) lines */
+void sho_diag_open(const char *path);
+void sho_diag(const char *fmt, ...);
 void sho_set_sound_levels(int music, int sfx);   /* 0-10 each */
 void sho_get_sound_levels(int *music, int *sfx);
 int sho_width(void);
@@ -55,9 +61,10 @@ int sho_width(void);
 /* 16:9 mode: extends the view and lets the game place objects in the extra area.
  * Off = bit-exact original behaviour. Takes effect immediately. */
 void sho_set_widescreen(int on);
-/* Any width between 320 (4:3) and SHO_MAX_W (a little wider than 16:9), for displays of other shapes
- * (e.g. MacBook screens, about 16:10). The game and the HUD use the extra area exactly as in 16:9.
- * sho_set_widescreen(1) = sho_set_view_width(SHO_WIDE_W). Takes effect immediately. */
+/* Any width between 320 (4:3) and SHO_MAX_W (21:9 and a little more), for displays of other shapes (MacBook
+ * screens, ultrawides; sho_views.h lists the named shapes). The game and the HUD use the extra area exactly as in
+ * 16:9. sho_set_widescreen(1) = sho_set_view_width(SHO_WIDE_W). Takes effect immediately: the current frame is
+ * drawn again at the new width (so a paused picture changes shape too). */
 void sho_set_view_width(int w);
 /* the view width that fills a display (or window) of this aspect ratio (width / height) */
 int sho_view_width_for_aspect(double aspect);

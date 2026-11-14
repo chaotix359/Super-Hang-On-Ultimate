@@ -35,6 +35,10 @@
 #include "sho_mdgfx.h"
 #include "mac_metal.h"
 #include "launcher_core.h"
+#include "sho_views.h"
+#include "sho_pace.h"
+#include "sho_controls.h"
+#include "sho_version.h"
 #include "ini_file.h"
 
 extern int sho_recomp;
@@ -49,7 +53,8 @@ enum {
     K_1 = 0x12, K_2 = 0x13, K_3 = 0x14, K_4 = 0x15, K_6 = 0x16, K_5 = 0x17, K_9 = 0x19, K_7 = 0x1A, K_8 = 0x1C, K_0 = 0x1D,
     K_P = 0x23, K_RETURN = 0x24, K_SPACE = 0x31, K_BACKSPACE = 0x33, K_ESCAPE = 0x35, K_KP_ENTER = 0x4C,
     K_F2 = 0x78, K_F3 = 0x63, K_F8 = 0x64, K_F9 = 0x65, K_F11 = 0x67,
-    K_LEFT = 0x7B, K_RIGHT = 0x7C, K_DOWN = 0x7D, K_UP = 0x7E
+    K_LEFT = 0x7B, K_RIGHT = 0x7C, K_DOWN = 0x7D, K_UP = 0x7E,
+    K_SHIFT = 0x38, K_TAB = 0x30, K_FWD_DELETE = 0x75
 };
 
 static NSWindow *g_win;
@@ -62,7 +67,7 @@ static double now_s(void);
 static int g_fullscreen = 1, g_running = 1, g_paused = 0, g_filter = 2, g_stretch = 0, g_view_mode = VIEW_FIT, g_have_metal = 0;
 static char g_dir[PATHN], g_ini[PATHN], g_nv[PATHN];   /* g_ini is handed to ini_set_path() */
 static const char *filter_names[3] = { "sharp", "smooth", "sharp-bilinear" };
-static const char *view_names[3] = { "fit screen", "16:9", "4:3" };
+static const char *view_name(int m) { return m == VIEW_FIT ? "fit screen" : sho_shapes[(m - 1) % SHO_NSHAPES].name; }
 
 /* input */
 static uint8_t g_keys[128];
@@ -91,7 +96,7 @@ static void write_default_ini(void) {
     fputs("; Super Hang-On Ultimate settings\n"
           "[video]\n"
           "fullscreen=1      ; start in fullscreen (Ctrl+Cmd+F / Cmd+Return toggles)\n"
-          "view=fit          ; fit = the screen's own shape (MacBook screens), 16:9, or 4:3 (Cmd+1/2/3 or F9)\n"
+          "view=fit          ; fit = the screen's own shape (MacBook screens), or 16:9, 18:9, 19:9, 20:9, 21:9, 4:3 (Cmd+1..7 or F9)\n"
           "filter=2          ; 0 sharp, 1 smooth, 2 sharp-bilinear (Cmd+4/5/6 or F8)\n"
           "stretch=0         ; 1 = stretch to fill the screen (distorts the picture)\n"
           "[input]\n"
@@ -125,11 +130,12 @@ static void write_default_ini(void) {
 static int read_view_mode(void) {
     char s[32]; ini_str("video", "view", "", s, sizeof s);
     if (!strcasecmp(s, "fit") || !strcasecmp(s, "auto")) return VIEW_FIT;
-    if (!strcasecmp(s, "16:9") || !strcasecmp(s, "wide")) return VIEW_WIDE;
-    if (!strcasecmp(s, "4:3")) return VIEW_43;
-    return ini_int("video", "widescreen", 1) ? VIEW_FIT : VIEW_43;   /* an ini from the Windows build */
+    if (!strcasecmp(s, "wide")) return VIEW_WIDE;
+    int k = sho_shape_find(s); if (k >= 0) return 1 + k;
+    ini_str("video", "aspect", "", s, sizeof s); k = sho_shape_find(s); if (k >= 0) return 1 + k;   /* an ini from the Windows build */
+    return ini_int("video", "widescreen", 1) ? VIEW_FIT : VIEW_43;
 }
-static void save_view_mode(void) { static const char *v[3] = { "fit", "16:9", "4:3" }; ini_set("video", "view", v[g_view_mode]); }
+static void save_view_mode(void) { ini_set("video", "view", g_view_mode == VIEW_FIT ? "fit" : sho_shapes[g_view_mode - 1].name); }
 
 static void apply_game_settings(void) {
     int demo = ini_int("game", "demo_sounds", 1), diff = ini_int("game", "difficulty", 1), tim = ini_int("game", "time", 1);
@@ -145,7 +151,7 @@ static void update_title(void) {
     char t[200];
     extern int g_pad_count_for_title;
     char pads[24] = ""; if (g_pad_count_for_title >= 0) snprintf(pads, sizeof pads, ", pads: %d", g_pad_count_for_title);
-    snprintf(t, sizeof t, "Super Hang-On Ultimate  [%s %d, %s, %s%s%s%s%s%s]", view_names[g_view_mode], sho_width(), filter_names[g_filter],
+    snprintf(t, sizeof t, "Super Hang-On Ultimate  [%s %d, %s, %s%s%s%s%s%s]", view_name(g_view_mode), sho_width(), filter_names[g_filter],
              g_have_metal ? "Metal" : "no Metal", sho_recomp ? ", C" : ", interpreter",
              g_md_present && ini_int("megadrive", "enhancements", 0) ? ", MD Enhancements" : "", g_md_present && ini_int("megadrive", "controls", 0) ? ", MD Controls" : "",
              g_md_present && ini_int("megadrive", "enhancements", 0) && ini_int("megadrive", "music", 0) ? ", MD Music" : "", pads);
@@ -175,11 +181,11 @@ static NSRect usable_rect(void) {
 
 /* the game picture's width: in "fit screen" it takes the shape of the usable area (e.g. 370 pixels on a
    1710x1112 or 1470x956 desktop, ~380 below the notch in fullscreen); 16:9 = 428, 4:3 = 320 */
-static void update_view_width(void) {
-    if (g_paused) return;   /* the pause menu redraws a kept frame of the old width; follow the window on resuming */
+static void update_view_width(void) {   /* (also while paused: the core draws the kept frame again at the new width) */
+    sho_pause_set_display(g_view_mode == VIEW_FIT ? "FIT" : sho_shapes[g_view_mode - 1].name);   /* (first: a new width redraws the pause menu) */
     int w = SHO_W;
-    if (g_view_mode == VIEW_WIDE) w = SHO_WIDE_W;
-    else if (g_view_mode == VIEW_FIT) {
+    if (g_view_mode != VIEW_FIT) w = sho_shapes[g_view_mode - 1].width;
+    else {
         NSRect u = usable_rect();
         w = u.size.height >= 1 ? sho_view_width_for_aspect(u.size.width / u.size.height) : SHO_WIDE_W;
     }
@@ -187,7 +193,10 @@ static void update_view_width(void) {
 }
 
 /* display aspect of the game image: the arcade monitor is 4:3 for 320 pixels; wider views keep that pixel shape */
-static double image_aspect(void) { return g_stretch ? 0.0 : (4.0 / 3.0) * sho_width() / (double)SHO_W; }
+static double image_aspect(void) {   /* a named shape uses its own aspect (fills a screen of that shape exactly) */
+    if (g_stretch) return 0.0;
+    return g_view_mode == VIEW_FIT ? (4.0 / 3.0) * sho_width() / (double)SHO_W : sho_shapes[g_view_mode - 1].aspect;
+}
 
 static int present(void) {
     if (!g_have_metal || !g_view) return 0;
@@ -236,7 +245,7 @@ static void launcher_mouse(NSEvent *e) {   /* a click on the launcher, in canvas
 }
 
 static void toggle_fullscreen(void) { if (g_win) [g_win toggleFullScreen:nil]; }
-static void set_view_mode(int m) { g_view_mode = m; save_view_mode(); update_view_width(); update_title(); }
+static void set_view_mode(int m) { g_view_mode = ((m % VIEW_COUNT) + VIEW_COUNT) % VIEW_COUNT; save_view_mode(); update_view_width(); update_title(); }
 static void set_filter(int f) { g_filter = f % 3; ini_set_int("video", "filter", g_filter); update_title(); }
 static void toggle_pause(void) {   /* in Mega Drive mode during a race this opens the pause menu */
     if (!g_paused) { g_paused = 1; g_pause_menu = sho_pause_begin(); }
@@ -270,12 +279,40 @@ static double display_refresh(void) {
 /* ------------------------------------------------------------------ */
 /* keyboard                                                           */
 /* ------------------------------------------------------------------ */
+static int mac_key_is_fkey(unsigned kc) {   /* F1..F12: the game's own keys, not assignable */
+    static const unsigned char f[] = { 0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F };
+    for (unsigned i = 0; i < sizeof f; i++) if (f[i] == kc) return 1;
+    return 0;
+}
+static const char *mac_key_name(int kc) {   /* macOS key codes (the positions of a US keyboard) */
+    static const struct { int kc; const char *n; } t[] = {
+        { 0x00, "A" }, { 0x01, "S" }, { 0x02, "D" }, { 0x03, "F" }, { 0x04, "H" }, { 0x05, "G" }, { 0x06, "Z" }, { 0x07, "X" }, { 0x08, "C" }, { 0x09, "V" },
+        { 0x0B, "B" }, { 0x0C, "Q" }, { 0x0D, "W" }, { 0x0E, "E" }, { 0x0F, "R" }, { 0x10, "Y" }, { 0x11, "T" }, { 0x12, "1" }, { 0x13, "2" }, { 0x14, "3" },
+        { 0x15, "4" }, { 0x16, "6" }, { 0x17, "5" }, { 0x18, "=" }, { 0x19, "9" }, { 0x1A, "7" }, { 0x1B, "-" }, { 0x1C, "8" }, { 0x1D, "0" }, { 0x1E, "]" },
+        { 0x1F, "O" }, { 0x20, "U" }, { 0x21, "[" }, { 0x22, "I" }, { 0x23, "P" }, { 0x24, "RETURN" }, { 0x25, "L" }, { 0x26, "J" }, { 0x27, "'" }, { 0x28, "K" },
+        { 0x29, ";" }, { 0x2A, "BACKSLASH" }, { 0x2B, "," }, { 0x2C, "/" }, { 0x2D, "N" }, { 0x2E, "M" }, { 0x2F, "." }, { 0x30, "TAB" }, { 0x31, "SPACE" },
+        { 0x32, "`" }, { 0x33, "DELETE" }, { 0x38, "SHIFT" }, { 0x41, "KP ." }, { 0x43, "KP *" }, { 0x45, "KP +" }, { 0x4B, "KP /" }, { 0x4C, "KP ENTER" },
+        { 0x4E, "KP -" }, { 0x51, "KP =" }, { 0x52, "KP 0" }, { 0x53, "KP 1" }, { 0x54, "KP 2" }, { 0x55, "KP 3" }, { 0x56, "KP 4" }, { 0x57, "KP 5" },
+        { 0x58, "KP 6" }, { 0x59, "KP 7" }, { 0x5B, "KP 8" }, { 0x5C, "KP 9" }, { 0x73, "HOME" }, { 0x74, "PAGE UP" }, { 0x75, "FWD DELETE" }, { 0x77, "END" },
+        { 0x79, "PAGE DOWN" }, { 0x7B, "LEFT" }, { 0x7C, "RIGHT" }, { 0x7D, "DOWN" }, { 0x7E, "UP" } };
+    for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) if (t[i].kc == kc) return t[i].n;
+    static char other[16]; snprintf(other, sizeof other, "KEY %d", kc);
+    return other;
+}
 static void key_event(NSEvent *e, int down) {
     unsigned kc = e.keyCode;
     NSEventModifierFlags fl = e.modifierFlags;
     if (fl & NSEventModifierFlagCommand) { if (!down && kc < 128) g_keys[kc] = 0; return; }   /* Cmd+key belongs to the menus */
     if (g_in_launcher) {   /* the settings screen: arrows (repeat), Return, Space, Esc; F11 still switches fullscreen */
         if (!down) return;
+        if (lc_wants_key()) {   /* the controls screen is waiting for a key to assign */
+            if (e.isARepeat) return;
+            if (kc == K_ESCAPE) lc_key(LK_ESC);
+            else if (kc < 128 && !mac_key_is_fkey(kc)) lc_raw_key((int)kc);
+            return;
+        }
+        if (kc == K_TAB) { if (!e.isARepeat) lc_key(LK_TAB); return; }
+        if (kc == K_BACKSPACE || kc == K_FWD_DELETE) { if (!e.isARepeat) lc_key(LK_CLEAR); return; }
         if (kc == K_UP) lc_key(LK_UP);
         else if (kc == K_DOWN) lc_key(LK_DOWN);
         else if (kc == K_LEFT) lc_key(LK_LEFT);
@@ -292,7 +329,7 @@ static void key_event(NSEvent *e, int down) {
     int ctrl = (fl & NSEventModifierFlagControl) != 0;
     if (kc == K_F11) toggle_fullscreen();
     if (kc == K_ESCAPE && g_fullscreen) toggle_fullscreen();
-    if (kc == K_P) toggle_pause();
+    if (sho_key_is_action(KA_PAUSE, (int)kc)) toggle_pause();   /* the pause key (P) */
     if (kc == K_8 && ctrl) sho_md_cheat_upgrade();      /* development: fully upgraded bike */
     if (kc == K_9 && ctrl) sho_md_cheat_money();        /* development: maximum money */
     if (ctrl) {   /* development: Original Mode race select */
@@ -300,12 +337,15 @@ static void key_event(NSEvent *e, int down) {
         for (int i = 0; i < 8; i++) if (kc == dk[i]) { sho_md_dev_race(i); ini_set_int("dev", "original_race", i); }
     }
     if (kc == K_F3) reset_to_title();
-    if (kc == K_F9) set_view_mode((g_view_mode + 1) % 3);
+    if (kc == K_F9) set_view_mode(g_view_mode + (g_shift ? -1 : 1));   /* Shift+F9 steps back */
     if (kc == K_F8) set_filter(g_filter + 1);
 }
 static void flags_event(NSEvent *e) {
     NSEventModifierFlags fl = e.modifierFlags;
+    int was = g_shift;
     g_shift = (fl & NSEventModifierFlagShift) != 0;
+    g_keys[K_SHIFT] = (uint8_t)g_shift;                       /* Shift as a key that can be assigned (either one) */
+    if (g_in_launcher && g_shift && !was && lc_wants_key()) lc_raw_key(K_SHIFT);
     if (fl & NSEventModifierFlagCommand) memset(g_keys, 0, sizeof g_keys);   /* keys released while Cmd is held send no key-up */
 }
 
@@ -327,15 +367,8 @@ static void flags_event(NSEvent *e) {
 /* ------------------------------------------------------------------ */
 /* input                                                              */
 /* ------------------------------------------------------------------ */
-static float axis_dz(float v) {
-    float a = fabsf(v);
-    if (a < g_deadzone) return 0.0f;
-    a = (a - g_deadzone) / (1.0f - g_deadzone); if (a > 1) a = 1;
-    a = powf(a, g_steer_curve);
-    return v < 0 ? -a : a;
-}
 /* one pad, read the same way whatever kind macOS reports it as */
-typedef struct { float lx, ly, lt, rt; int a, b, x, y, rb, start, back, du, dd, dl, dr; } padstate;
+typedef struct { float lx, ly, lt, rt; int a, b, x, y, rb, start, back, du, dd, dl, dr, lb, l3, r3; } padstate;
 static int g_pad_count = -1;
 int g_pad_count_for_title = -1;
 static float btn(GCControllerButtonInput *b) { return b ? b.value : 0.0f; }
@@ -354,7 +387,8 @@ static int read_pad(GCController *c, padstate *p) {
         p->lx = g.leftThumbstick.xAxis.value; p->ly = g.leftThumbstick.yAxis.value;
         p->lt = g.leftTrigger.value; p->rt = g.rightTrigger.value;
         p->a = pressed(g.buttonA); p->b = pressed(g.buttonB); p->x = pressed(g.buttonX); p->y = pressed(g.buttonY);
-        p->rb = pressed(g.rightShoulder);
+        p->rb = pressed(g.rightShoulder); p->lb = pressed(g.leftShoulder);
+        if (@available(macOS 10.14.1, *)) { p->l3 = pressed(g.leftThumbstickButton); p->r3 = pressed(g.rightThumbstickButton); }
         if (@available(macOS 10.15, *)) { p->start = pressed(g.buttonMenu); p->back = pressed(g.buttonOptions); }
         dpad_dirs(g.dpad, p);
         return 1;
@@ -369,7 +403,8 @@ static int read_pad(GCController *c, padstate *p) {
             p->lt = btn(bs[GCInputLeftTrigger]); p->rt = btn(bs[GCInputRightTrigger]);
             p->a = pressed(bs[GCInputButtonA]); p->b = pressed(bs[GCInputButtonB]);
             p->x = pressed(bs[GCInputButtonX]); p->y = pressed(bs[GCInputButtonY]);
-            p->rb = pressed(bs[GCInputRightShoulder]);
+            p->rb = pressed(bs[GCInputRightShoulder]); p->lb = pressed(bs[GCInputLeftShoulder]);
+            p->l3 = pressed(bs[GCInputLeftThumbstickButton]); p->r3 = pressed(bs[GCInputRightThumbstickButton]);
             p->start = pressed(bs[GCInputButtonMenu]); p->back = pressed(bs[GCInputButtonOptions]);
             dpad_dirs(ds[GCInputDirectionPad], p);
             return ls || ds[GCInputDirectionPad] || bs[GCInputButtonA];
@@ -445,32 +480,29 @@ static void padlog_state(int i, const padstate *p) {
     last[i] = *p; have[i] = 1;
 }
 
-/* one pad's controls into the game's input (the Windows build's XInput mapping) */
-static void apply_pad(int slot, const padstate *p, sho_input *in, float *steer, float *thr, float *brk) {
-    float sx = axis_dz(p->lx);
-    if (p->dl) sx = -1;
-    if (p->dr) sx = 1;
-    if (fabsf(sx) > fabsf(*steer)) *steer = sx;
-    float rt = p->rt, lt = p->lt;
-    if (g_swap_pedals) { float t = rt; rt = lt; lt = t; }
-    if (rt < 0.04f) rt = 0;
-    if (lt < 0.04f) lt = 0;
-    if (p->a) in->pad_a = 1;                              /* throttle, or enter on initials */
-    /* directions for menus / initials: d-pad or left stick (with hysteresis) */
-    static int stick_dir[8][4];   /* [pad][up,down,left,right] */
-    float v[4] = { p->ly, -p->ly, -p->lx, p->lx };
-    for (int d = 0; d < 4; d++) stick_dir[slot][d] = stick_dir[slot][d] ? v[d] > 0.35f : v[d] > 0.6f;
-    if (p->du || stick_dir[slot][0]) in->nav_up = 1;
-    if (p->dd || stick_dir[slot][1]) in->nav_down = 1;
-    if (p->dl || stick_dir[slot][2]) in->nav_left = 1;
-    if (p->dr || stick_dir[slot][3]) in->nav_right = 1;
-    if (p->b || p->x) lt = 1;
-    if (p->b) in->pad_b = 1;                              /* back on the Original Mode screens */
-    if (rt > *thr) *thr = rt;
-    if (lt > *brk) *brk = lt;
-    if (p->rb || p->y) in->turbo = 1;
-    if (p->start) in->start = 1;                          /* Start / Menu */
-    if (p->back) in->coin = 1;                            /* Back / View / Select */
+/* one pad as the shared Xbox-style state (sho_controls.h): what each button does is set on the launcher's controls screen */
+static void to_sho_pad(const padstate *p, sho_pad *o) {
+    memset(o, 0, sizeof *o);
+    o->lx = p->lx; o->ly = p->ly; o->lt = p->lt; o->rt = p->rt;
+    if (p->a) o->buttons |= 1u << PB_A;
+    if (p->b) o->buttons |= 1u << PB_B;
+    if (p->x) o->buttons |= 1u << PB_X;
+    if (p->y) o->buttons |= 1u << PB_Y;
+    if (p->lb) o->buttons |= 1u << PB_LB;
+    if (p->rb) o->buttons |= 1u << PB_RB;
+    if (p->back) o->buttons |= 1u << PB_BACK;
+    if (p->start) o->buttons |= 1u << PB_START;
+    if (p->l3) o->buttons |= 1u << PB_L3;
+    if (p->r3) o->buttons |= 1u << PB_R3;
+    if (p->du) o->buttons |= 1u << PB_UP;
+    if (p->dd) o->buttons |= 1u << PB_DOWN;
+    if (p->dl) o->buttons |= 1u << PB_LEFT;
+    if (p->dr) o->buttons |= 1u << PB_RIGHT;
+    sho_pad_finish(o);
+}
+static void apply_pad(int slot, const padstate *p, int menu, sho_input *in, float *steer, float *thr, float *brk) {
+    sho_pad sp; to_sho_pad(p, &sp);
+    sho_controls_apply_pad(slot, &sp, menu, in, steer, thr, brk);
 }
 
 /* ------------------------------------------------------------------ */
@@ -589,6 +621,18 @@ static int hid_read(hidpad *h, padstate *p) {
     }
     int *out[7] = { &p->a, &p->b, &p->x, &p->y, &p->rb, &p->back, &p->start };
     for (int k = 0; k < 7; k++) { int b = g_hidmap[k]; if (b >= 1 && b <= 32 && h->btn[b]) *out[k] = hid_value(h->dev, h->btn[b]) != 0; }
+    {   /* the rest of the usual layout, where [pad] map= has not taken the number: 7 LB, 9 / 10 the triggers as buttons, 14 / 15 stick clicks */
+        static const int more[5] = { 7, 9, 10, 14, 15 };
+        int v[5] = { 0, 0, 0, 0, 0 };
+        for (int k = 0; k < 5; k++) {
+            int b = more[k], taken = 0;
+            for (int q = 0; q < 7; q++) if (g_hidmap[q] == b) taken = 1;
+            if (!taken && h->btn[b]) v[k] = hid_value(h->dev, h->btn[b]) != 0;
+        }
+        p->lb = v[0]; p->l3 = v[3]; p->r3 = v[4];
+        if (v[1] && !h->lt.e) p->lt = 1.0f;                /* (only pads without analogue triggers) */
+        if (v[2] && !h->rt.e) p->rt = 1.0f;
+    }
     /* log raw button numbers and unknown controls as they change (to fill in [pad] map= for an unusual pad) */
     for (int b = 1; b <= 32; b++) if (h->btn[b]) {
         CFIndex v = hid_value(h->dev, h->btn[b]);
@@ -614,27 +658,110 @@ static void hid_init(void) {
     padlog("HID: manager open (%s)", r == kIOReturnSuccess ? "ok" : "failed");
 }
 
+/* ---- the launcher's controls screen: the controllers macOS has ----
+ * Those in System Settings > Game Controllers (the GameController framework), by their names there, then the same or other
+ * pads read directly as USB / Bluetooth devices, marked (HID). With ANY CONTROLLER the game uses the first kind, and the
+ * second only while the framework delivers nothing; a pad chosen by name is used whichever kind it is. */
+static void gc_name(GCController *c, int n, char *out, size_t len) {
+    snprintf(out, len, "%.80s", c.vendorName.length ? c.vendorName.UTF8String : "Controller");
+    if (n > 0) { size_t l = strlen(out); snprintf(out + l, len - l, " (%d)", n + 1); }   /* two of the same */
+}
+static int gc_dup(NSArray<GCController *> *pads, int i) {   /* how many earlier ones have this one's name */
+    int n = 0; NSString *a = pads[(NSUInteger)i].vendorName;
+    for (int k = 0; k < i; k++) { NSString *b = pads[(NSUInteger)k].vendorName; if ((!a && !b) || (a && b && [a isEqualToString:b])) n++; }
+    return n;
+}
+static void hid_name(int h, char *out, size_t len) { snprintf(out, len, "%.80s (HID)", g_hid[h].name[0] ? g_hid[h].name : "Controller"); }
+static int host_pad_count(void) { hid_poll(); int n = (int)[GCController controllers].count; if (n > 4) n = 4; return n + g_nhid; }
+static const char *host_pad_name(int i) {
+    static char nm[160]; nm[0] = 0;
+    NSArray<GCController *> *pads = [GCController controllers];
+    int n = (int)pads.count; if (n > 4) n = 4;
+    if (i >= 0 && i < n) gc_name(pads[(NSUInteger)i], gc_dup(pads, i), nm, sizeof nm);
+    else if (i >= n && i - n < g_nhid) hid_name(i - n, nm, sizeof nm);
+    return nm;
+}
+static void pad_merge(sho_pad *out, const sho_pad *p) {
+    out->buttons |= p->buttons;
+    if (fabsf(p->lx) > fabsf(out->lx)) out->lx = p->lx;
+    if (fabsf(p->ly) > fabsf(out->ly)) out->ly = p->ly;
+    if (p->lt > out->lt) out->lt = p->lt;
+    if (p->rt > out->rt) out->rt = p->rt;
+}
+static int host_pad_read(int i, sho_pad *out) {
+    NSArray<GCController *> *pads = [GCController controllers];
+    int n = (int)pads.count; if (n > 4) n = 4;
+    padstate p; sho_pad sp;
+    memset(out, 0, sizeof *out);
+    hid_poll();
+    if (i >= 0) {
+        if (i < n) { if (!read_pad(pads[(NSUInteger)i], &p)) return 0; }
+        else if (i - n < g_nhid) { if (!hid_read(&g_hid[i - n], &p)) return 0; }
+        else return 0;
+        to_sho_pad(&p, out);
+        return 1;
+    }
+    int any = 0;                                           /* any: all of them, merged */
+    for (int k = 0; k < n; k++) if (read_pad(pads[(NSUInteger)k], &p)) { to_sho_pad(&p, &sp); pad_merge(out, &sp); any = 1; }
+    for (int h = 0; h < g_nhid; h++) if (hid_read(&g_hid[h], &p)) { to_sho_pad(&p, &sp); pad_merge(out, &sp); any = 1; }
+    return any;
+}
+static void controls_save(void) {
+    char t[256];
+    sho_controls_pad_to_str(t, sizeof t); ini_set("pad", "actions", t);
+    ini_set("pad", "device", sho_ctl.device);
+    sho_controls_keys_to_str(t, sizeof t); ini_set("keys_mac", "keys", t);
+}
+static void controls_load(void) {
+    /* (Ctrl is not a throttle on the Mac: Ctrl+arrows switch Spaces / open Mission Control) */
+    static const int def[KA_COUNT][KEY_SLOTS] = {
+        [KA_LEFT] = { K_LEFT, K_A, -1, -1 }, [KA_RIGHT] = { K_RIGHT, K_D, -1, -1 },
+        [KA_ACCEL] = { K_UP, K_Z, K_W, -1 }, [KA_BRAKE] = { K_DOWN, K_X, K_S, -1 },
+        [KA_TURBO] = { K_SPACE, K_SHIFT, -1, -1 }, [KA_START] = { K_RETURN, K_1, K_KP_ENTER, -1 },
+        [KA_COIN] = { K_5, K_C, -1, -1 }, [KA_PAUSE] = { K_P, -1, -1, -1 } };
+    char t[256];
+    sho_ctl.deadzone = g_deadzone; sho_ctl.curve = g_steer_curve;
+    sho_controls_pad_defaults(g_swap_pedals);
+    ini_str("pad", "actions", "", t, sizeof t); if (t[0]) sho_controls_pad_from_str(t);
+    ini_str("pad", "device", "", sho_ctl.device, sizeof sho_ctl.device);
+    sho_controls_key_defaults(def);
+    ini_str("keys_mac", "keys", "", t, sizeof t); if (t[0]) sho_controls_keys_from_str(t);
+}
+static const lc_controls_host g_controls_host = { host_pad_count, host_pad_name, host_pad_read, mac_key_name, controls_save };
+
+static int g_ctrl_down;
+static int key_held(int kc) {
+    if (kc < 0 || kc >= 128 || !g_keys[kc]) return 0;
+    if (g_ctrl_down && (kc == K_0 || kc == K_1 || kc == K_2 || kc == K_3 || kc == K_4 || kc == K_5 || kc == K_6 || kc == K_7 || kc == K_8 || kc == K_9)) return 0;   /* Ctrl+digits are the development keys */
+    return 1;
+}
+static int is_arrow(int kc) { return kc == K_UP || kc == K_DOWN || kc == K_LEFT || kc == K_RIGHT; }
+static int act_key_not_arrow(int ka) {   /* one of the action's keys is down, arrows aside (they move through menus) */
+    for (int i = 0; i < KEY_SLOTS; i++) { int c = sho_ctl.key[ka][i]; if (c >= 0 && !is_arrow(c) && key_held(c)) return 1; }
+    return 0;
+}
 static void read_input(sho_input *in, float dt) {
     memset(in, 0, sizeof *in);
     int focused = g_win && g_win.isKeyWindow && NSApp.isActive;
-    int kl = focused && (g_keys[K_LEFT] || g_keys[K_A]), kr = focused && (g_keys[K_RIGHT] || g_keys[K_D]);
+    g_ctrl_down = ([NSEvent modifierFlags] & NSEventModifierFlagControl) != 0;
+    int menu = sho_md_overlay_active() || g_pause_menu;   /* the Original Mode screens, the pause menu */
+    int kl = focused && sho_key_action_down(KA_LEFT, key_held), kr = focused && sho_key_action_down(KA_RIGHT, key_held);
     float target = (float)(kr - kl), rate = (target == 0.0f) ? 6.0f : 3.5f;   /* keyboard: handlebar ramps */
     if (g_kb_steer < target) { g_kb_steer += rate * dt; if (g_kb_steer > target) g_kb_steer = target; }
     else if (g_kb_steer > target) { g_kb_steer -= rate * dt; if (g_kb_steer < target) g_kb_steer = target; }
     float steer = g_kb_steer, thr = 0, brk = 0;
-    if (focused && (sho_md_overlay_active() || g_pause_menu)) {   /* Original Mode screens: arrows move, Z/Space select, Delete/X back */
+    if (focused && menu) {   /* there: arrows move, Space or the accelerate keys select, Delete or the brake keys go back (Return is Start) */
         in->nav_up = g_keys[K_UP]; in->nav_down = g_keys[K_DOWN]; in->nav_left = g_keys[K_LEFT]; in->nav_right = g_keys[K_RIGHT];
-        in->pad_a = g_keys[K_Z] || g_keys[K_SPACE]; in->pad_b = g_keys[K_BACKSPACE] || g_keys[K_X];
+        in->pad_a = g_keys[K_SPACE] || act_key_not_arrow(KA_ACCEL); in->pad_b = g_keys[K_BACKSPACE] || act_key_not_arrow(KA_BRAKE);
     }
     if (focused) {
-        /* (Ctrl is not a throttle on the Mac: Ctrl+arrows switch Spaces / open Mission Control) */
-        if (g_keys[K_UP] || g_keys[K_Z] || g_keys[K_W]) thr = 1;
-        if (g_keys[K_DOWN] || g_keys[K_X] || g_keys[K_S]) brk = 1;
-        in->turbo = g_keys[K_SPACE] || g_shift;
-        in->coin = g_keys[K_5] || g_keys[K_C];
-        in->start = g_keys[K_1] || g_keys[K_RETURN] || g_keys[K_KP_ENTER];
+        if (sho_key_action_down(KA_ACCEL, key_held)) thr = 1;
+        if (sho_key_action_down(KA_BRAKE, key_held)) brk = 1;
+        in->turbo = sho_key_action_down(KA_TURBO, key_held);
+        in->coin = sho_key_action_down(KA_COIN, key_held);
+        in->start = sho_key_action_down(KA_START, key_held);
         in->test = g_keys[K_F2];
-        in->service = g_keys[K_9];
+        in->service = !g_ctrl_down && g_keys[K_9];
     }
     /* gamepads through the GameController framework: Xbox, PlayStation, MFi, and the third-party pads macOS lists
        under System Settings > Game Controllers (GameSir, 8BitDo...) */
@@ -642,6 +769,14 @@ static void read_input(sho_input *in, float dt) {
       long ev = g_pad_events; double t = now_s();
       if (ev != last_ev && t - last_t > 1.0) { padlog("pad events delivered so far: %ld", ev); last_ev = ev; last_t = t; } }
     NSArray<GCController *> *pads = [GCController controllers];
+    hid_poll();
+    int any = !sho_ctl.device[0];                          /* no controller chosen, or the chosen one is not there: any of them */
+    if (!any) {
+        int there = 0, n = (int)pads.count; char nm[160]; if (n > 4) n = 4;
+        for (int k = 0; k < n; k++) { gc_name(pads[(NSUInteger)k], gc_dup(pads, k), nm, sizeof nm); if (!strcmp(nm, sho_ctl.device)) there = 1; }
+        for (int h = 0; h < g_nhid; h++) { hid_name(h, nm, sizeof nm); if (!strcmp(nm, sho_ctl.device)) there = 1; }
+        if (!there) any = 1;
+    }
     if ((int)pads.count != g_pad_count) { g_pad_count = g_pad_count_for_title = (int)pads.count; padlog("controllers: %d", g_pad_count); update_title(); }
     int i = -1;
     for (GCController *c in pads) {
@@ -650,16 +785,17 @@ static void read_input(sho_input *in, float dt) {
         padstate p;
         if (!read_pad(c, &p)) continue;
         padlog_state(i, &p);
-        apply_pad(i, &p, in, &steer, &thr, &brk);
+        char nm[160]; gc_name(c, gc_dup(pads, i), nm, sizeof nm);
+        if (any || !strcmp(nm, sho_ctl.device)) apply_pad(i, &p, menu, in, &steer, &thr, &brk);   /* any, or the chosen one */
     }
     /* the same pads read directly as USB/Bluetooth HID devices: works even when the framework above delivers
        nothing to the game (it is set aside once the framework does deliver) */
-    hid_poll();
     for (int h = 0; h < g_nhid; h++) {
         padstate p;
         if (!hid_read(&g_hid[h], &p)) continue;
         padlog_state(4 + h, &p);
-        if (g_pad_events == 0) apply_pad(4 + h, &p, in, &steer, &thr, &brk);
+        char nm[160]; hid_name(h, nm, sizeof nm);
+        if (any ? g_pad_events == 0 : !strcmp(nm, sho_ctl.device)) apply_pad(4 + h, &p, menu, in, &steer, &thr, &brk);
     }
     in->steer = steer; in->throttle = thr; in->brake = brk;
 }
@@ -867,9 +1003,7 @@ static void find_game_dir(void) {
 - (void)windowDidResignKey:(NSNotification *)n { (void)n; memset(g_keys, 0, sizeof g_keys); g_shift = 0; }
 - (void)windowDidChangeScreen:(NSNotification *)n { (void)n; display_link_follow_screen(); }
 - (void)fullScreen:(id)s { (void)s; toggle_fullscreen(); }
-- (void)viewFit:(id)s { (void)s; set_view_mode(VIEW_FIT); }
-- (void)viewWide:(id)s { (void)s; set_view_mode(VIEW_WIDE); }
-- (void)view43:(id)s { (void)s; set_view_mode(VIEW_43); }
+- (void)viewMode:(NSMenuItem *)s { set_view_mode((int)s.tag); }   /* Display menu: the item's tag is the mode */
 - (void)filterSharp:(id)s { (void)s; set_filter(0); }
 - (void)filterSmooth:(id)s { (void)s; set_filter(1); }
 - (void)filterSharpBilinear:(id)s { (void)s; set_filter(2); }
@@ -878,9 +1012,7 @@ static void find_game_dir(void) {
 - (BOOL)validateMenuItem:(NSMenuItem *)it {
     SEL a = it.action;
     int game = g_win != nil && !g_in_launcher;
-    if (a == @selector(viewFit:)) it.state = g_view_mode == VIEW_FIT ? NSControlStateValueOn : NSControlStateValueOff;
-    if (a == @selector(viewWide:)) it.state = g_view_mode == VIEW_WIDE ? NSControlStateValueOn : NSControlStateValueOff;
-    if (a == @selector(view43:)) it.state = g_view_mode == VIEW_43 ? NSControlStateValueOn : NSControlStateValueOff;
+    if (a == @selector(viewMode:)) it.state = it.tag == g_view_mode ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(filterSharp:)) it.state = g_filter == 0 ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(filterSmooth:)) it.state = g_filter == 1 ? NSControlStateValueOn : NSControlStateValueOff;
     if (a == @selector(filterSharpBilinear:)) it.state = g_filter == 2 ? NSControlStateValueOn : NSControlStateValueOff;
@@ -917,9 +1049,11 @@ static void build_menus(void) {
     {   NSMenuItem *alt = add_item(disp, @"Toggle Full Screen", @selector(fullScreen:), @"\r", NSEventModifierFlagCommand, g_ctl);   /* Cmd+Return too */
         alt.hidden = YES; alt.allowsKeyEquivalentWhenHidden = YES; }
     [disp addItem:[NSMenuItem separatorItem]];
-    add_item(disp, @"Fit Screen", @selector(viewFit:), @"1", NSEventModifierFlagCommand, g_ctl);
-    add_item(disp, @"16:9 Widescreen", @selector(viewWide:), @"2", NSEventModifierFlagCommand, g_ctl);
-    add_item(disp, @"4:3 Original", @selector(view43:), @"3", NSEventModifierFlagCommand, g_ctl);
+    add_item(disp, @"Fit Screen", @selector(viewMode:), @"1", NSEventModifierFlagCommand, g_ctl).tag = VIEW_FIT;
+    for (int i = 0; i < SHO_NSHAPES; i++) {   /* 16:9, 18:9, 19:9, 20:9, 21:9, 4:3: Cmd+2..7, in F9 order */
+        static NSString *const titles[SHO_NSHAPES] = { @"16:9 Widescreen", @"18:9 Ultrawide", @"19:9 Ultrawide", @"20:9 Ultrawide", @"21:9 Ultrawide", @"4:3 Original" };
+        add_item(disp, titles[i], @selector(viewMode:), [NSString stringWithFormat:@"%d", i + 2], NSEventModifierFlagCommand, g_ctl).tag = 1 + i;
+    }
     [disp addItem:[NSMenuItem separatorItem]];
     add_item(disp, @"Sharp Pixels", @selector(filterSharp:), @"4", NSEventModifierFlagCommand, g_ctl);
     add_item(disp, @"Smooth", @selector(filterSmooth:), @"5", NSEventModifierFlagCommand, g_ctl);
@@ -945,8 +1079,7 @@ static void create_window(void) {
     NSScreen *scr = [NSScreen mainScreen];
     NSRect vis = scr ? scr.visibleFrame : NSMakeRect(0, 0, 1440, 900);
     double a;
-    if (g_view_mode == VIEW_WIDE) a = 16.0 / 9.0;
-    else if (g_view_mode == VIEW_43) a = 4.0 / 3.0;
+    if (g_view_mode != VIEW_FIT) a = sho_shapes[g_view_mode - 1].aspect;
     else { NSRect f = scr ? scr.frame : vis; double top = 0;
            if (@available(macOS 12.0, *)) top = scr ? scr.safeAreaInsets.top : 0;
            a = f.size.width / (f.size.height - top); }          /* the shape fullscreen will have */
@@ -986,7 +1119,7 @@ static void pump_events(void) {
     static NSPoint last; static double still_since; static int hidden;
     NSPoint m = [NSEvent mouseLocation]; double t = now_s();
     if (m.x != last.x || m.y != last.y) { last = m; still_since = t; hidden = 0; }
-    else if (g_fullscreen && !hidden && t - still_since > 2.0 && g_win.isKeyWindow) { [NSCursor setHiddenUntilMouseMoves:YES]; hidden = 1; }
+    else if (g_fullscreen && !g_in_launcher && !hidden && t - still_since > 2.0 && g_win.isKeyWindow) { [NSCursor setHiddenUntilMouseMoves:YES]; hidden = 1; }
 }
 
 /* the launcher: d-pad / stick directions, A and Start of any pad, as bits (up, down, left, right, A, Start) */
@@ -1015,6 +1148,7 @@ static int run(int argc, char **argv) {
     find_game_dir();
     gamepads_init();   /* before the app is activated (launcher): the pad framework learns which app is in front from that */
     path_join(g_ini, g_dir, "shangon.ini"); path_join(g_nv, g_dir, "shangon.nv");
+    { char lg[PATHN]; path_join(lg, g_dir, "shangon.log"); sho_diag_open(lg); sho_diag("Super Hang-On Ultimate %s (macOS)", SHO_VERSION); }
     ini_set_path(g_ini);
     write_default_ini();
     hid_init();
@@ -1026,6 +1160,7 @@ static int run(int argc, char **argv) {
     g_deadzone = ini_int("input", "deadzone", 15) / 100.0f;
     g_steer_curve = ini_int("input", "steer_curve", 100) / 100.0f;
     g_swap_pedals = ini_int("input", "swap_pedals", 0);
+    controls_load();
     ini_str("advanced", "cpu", "recompiled", s, sizeof s); sho_recomp = strcasecmp(s, "interpreter") != 0;
     int play_now = 0;
     for (int i = 1; i < argc; i++) {   /* -window, -fullscreen, -interpreter, -play, or a ROM path */
@@ -1055,8 +1190,9 @@ static int run(int argc, char **argv) {
 
     if (show_launcher) {
         launcher_settings ls; memset(&ls, 0, sizeof ls);
-        static const char *const views[3] = { "FIT SCREEN", "16:9 WIDESCREEN", "4:3 ORIGINAL" };
-        ls.view_names = views; ls.view_count = 3; ls.view_desc = "CMD+1 / CMD+2 / CMD+3 SWITCH DURING PLAY";
+        static const char *views[VIEW_COUNT] = { "FIT SCREEN" };
+        for (int i = 0; i < SHO_NSHAPES; i++) views[1 + i] = sho_shapes[i].long_name;
+        ls.view_names = views; ls.view_count = VIEW_COUNT; ls.view_desc = "F9 OR CMD+1 TO CMD+7 SWITCH DURING PLAY";
         ls.demo_sounds = ini_int("game", "demo_sounds", 1);
         ls.difficulty = ini_int("game", "difficulty", 1) & 3;
         ls.time_adj = ini_int("game", "time", 1) & 3;
@@ -1077,6 +1213,7 @@ static int run(int argc, char **argv) {
         ls.md_check = md_rom_check;
         NSString *pngpath = [[NSBundle mainBundle] pathForResource:@"launcher_bg" ofType:@"png"];   /* the launcher picture, in the app's Resources */
         NSData *png = pngpath ? [NSData dataWithContentsOfFile:pngpath] : nil;
+        lc_set_controls_host(&g_controls_host);
         lc_begin(&ls, rom_check, png ? (const unsigned char *)png.bytes : NULL, png ? (size_t)png.length : 0);
         lc_clock = now_s; lc_present_hook = present_loading;
         g_in_launcher = 1;
@@ -1086,10 +1223,10 @@ static int run(int argc, char **argv) {
             @autoreleasepool {
                 pump_events();
                 int b = launcher_pad_buttons(), e = b & ~pad_prev; pad_prev = b;
-                if (e & 1) lc_key(LK_UP);
-                if (e & 2) lc_key(LK_DOWN);
-                if (e & 4) lc_key(LK_LEFT);
-                if (e & 8) lc_key(LK_RIGHT);
+                if (e & 1) lc_key(LK_PAD_UP);
+                if (e & 2) lc_key(LK_PAD_DOWN);
+                if (e & 4) lc_key(LK_PAD_LEFT);
+                if (e & 8) lc_key(LK_PAD_RIGHT);
                 if (e & 16) lc_key(LK_PAD_A);
                 if (e & 32) lc_key(LK_PAD_START);
                 if (lc_folder_clicked()) [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:g_dir] isDirectory:YES]];
@@ -1182,6 +1319,8 @@ static int run(int argc, char **argv) {
     double refresh = display_refresh();
     if (have_audio) { memset(samples, 0, sizeof samples); audio_submit(samples, 1100); audio_submit(samples, 1100); audio_submit(samples, 1000); }
     double acc = 0, next_frame = now_s(), audio_frac = 0;
+    int audio_target = AUDIO_TARGET, underruns = 0, diag_n = 0; long game_frames = 0, diag_frames = 0; double diag_t = now_s(), diag_t0 = diag_t;
+    sho_diag("display: Metal, reported refresh %.2f Hz, display link %s", refresh, g_dl ? "on" : "off");
 
     while (g_running) {
         @autoreleasepool {
@@ -1224,6 +1363,7 @@ static int run(int argc, char **argv) {
               if (!g_paused && start_edge && sho_md_pause_allowed()) { g_paused = 1; g_pause_menu = sho_pause_begin(); ptick = 0; }
               else if (g_paused && g_pause_menu) {
                   int act = sho_pause_update(&in, ptick++);
+                  if (act == 3 || act == 4) { set_view_mode(g_view_mode + (act == 3 ? 1 : -1)); act = 0; }   /* DISPLAY: stays paused */
                   if (act) { sho_pause_end(); apply_sound_levels(1); g_paused = 0; g_pause_menu = 0; if (act == 2) reset_to_title(); }
               }
               if (g_paused) in.start = 0; }
@@ -1235,15 +1375,27 @@ static int run(int argc, char **argv) {
             if (have_audio) {
                 /* samples for this frame; small correction keeps the device queue near its target */
                 long q = audio_queued();
-                double corr = (double)(AUDIO_TARGET - q) / AUDIO_TARGET * 0.01;
+                if (!g_paused && game_frames > 120 && sho_audio_target_step(q, &audio_target)) {   /* ran dry: more cushion */
+                    underruns++; sho_diag("sound: queue ran dry (%ld samples); cushion now %d ms", (long)q, audio_target * 1000 / AUDIO_RATE); }
+                double corr = (double)(audio_target - q) / audio_target * 0.01;
                 if (corr > 0.01) corr = 0.01;
                 if (corr < -0.01) corr = -0.01;
                 audio_frac += AUDIO_RATE * period * (1.0 + corr);
                 int n = (int)audio_frac; audio_frac -= n; if (n > 1100) n = 1100;
                 if (g_paused) memset(samples, 0, sizeof samples); else sho_audio(samples, n);
-                if (q < AUDIO_TARGET * 4) audio_submit(samples, n);   /* drop if far too much is queued */
+                if (q < audio_target * 4) audio_submit(samples, n);   /* drop if far too much is queued */
             }
             if (++frames_since_save >= 60 * 60) { save_nvram(); frames_since_save = 0; }
+            game_frames++;
+        }
+        {   /* the log: the speed after 5 and 10 seconds, then every 30 */
+            double tp = now_s();
+            if (tp - diag_t >= (diag_n < 2 ? 5.0 : 30.0)) {
+                double fps = (game_frames - diag_frames) / (tp - diag_t);
+                if (diag_n++ && !g_paused) sho_diag("%4.0f s: speed %.1f%% (%.2f game frames a second), reported refresh %.2f Hz, sound cushion %d ms, ran dry %d times",
+                                                    tp - diag_t0, fps / SHO_FPS * 100.0, fps, refresh, audio_target * 1000 / AUDIO_RATE, underruns);
+                diag_t = tp; diag_frames = game_frames;
+            }
         }
         present();
         }

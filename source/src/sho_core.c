@@ -71,11 +71,15 @@ static uint32_t framebuffer[SHO_MAX_W * SHO_H];
 static int snd_music = 10, snd_sfx = 10;   /* 0-10, set from the pause menu */
 int sho_wide_xo = 0;                      /* extra pixels each side (read by game-logic overrides) */
 void sho_video_set_margin(int xo); int sho_video_width(void);
+static void redraw_frame(void);
+static int frame_drawn;                   /* a frame has been made (so it can be drawn again at another width) */
 void sho_set_view_width(int w) {
     if (w < SHO_W) w = SHO_W;
     if (w > SHO_MAX_W) w = SHO_MAX_W;
+    int old = sho_video_width();
     sho_wide_xo = (w - SHO_W) / 2;                /* the margin is the same on both sides, so the width is even */
     sho_video_set_margin(sho_wide_xo);
+    if (sho_video_width() != old && frame_drawn) redraw_frame();   /* e.g. while paused: the kept frame was the old width */
 }
 void sho_set_widescreen(int on) { sho_set_view_width(on ? SHO_WIDE_W : SHO_W); }
 int sho_view_width_for_aspect(double aspect) {
@@ -374,6 +378,7 @@ static void run_frame_internal(void) {
 }
 
 void sho_run_frame(void) {
+    frame_drawn = 1;
     if (!md_enabled) { run_frame_internal(); return; }
     if (md_frozen()) { md_pre_frame(); sho_video_render(framebuffer); md_compose(framebuffer, sho_video_width()); return; }   /* the arcade holds still (the title under the mode choice) */
     md_pre_frame(); run_frame_internal(); md_post_frame();
@@ -382,7 +387,18 @@ void sho_run_frame(void) {
 }
 
 /* Mega Drive mode pause: the frame is kept and the pause menu drawn over it */
-static uint32_t pause_keep[SHO_MAX_W * SHO_H]; static int pause_kept;
+static uint32_t pause_keep[SHO_MAX_W * SHO_H]; static int pause_kept, pause_tick;
+static char pause_display[24] = "16:9";
+/* the current frame again at the current width (the game doesn't move: the video chips' state is drawn once more) */
+static void redraw_frame(void) {
+    sho_video_render(framebuffer);
+    if (md_enabled) md_compose(framebuffer, sho_video_width());
+    if (pause_kept) {   /* the pause menu goes over the new one */
+        memcpy(pause_keep, framebuffer, sizeof pause_keep);
+        md_pause_menu(framebuffer, sho_video_width(), pause_tick, NULL, &snd_music, &snd_sfx, pause_display);
+    }
+}
+void sho_pause_set_display(const char *name) { snprintf(pause_display, sizeof pause_display, "%s", name ? name : ""); }
 int sho_pause_begin(void) {
     if (!md_enabled || !sho_md_pause_allowed()) return 0;
     memcpy(pause_keep, framebuffer, sizeof pause_keep); pause_kept = 1; md_pause_reset();
@@ -391,7 +407,8 @@ int sho_pause_begin(void) {
 int sho_pause_update(const sho_input *in, int tick) {
     if (!pause_kept) return 1;
     memcpy(framebuffer, pause_keep, sizeof pause_keep);
-    return md_pause_menu(framebuffer, sho_video_width(), tick, in, &snd_music, &snd_sfx);
+    pause_tick = tick;
+    return md_pause_menu(framebuffer, sho_video_width(), tick, in, &snd_music, &snd_sfx, pause_display);
 }
 void sho_pause_end(void) { if (pause_kept) memcpy(framebuffer, pause_keep, sizeof pause_keep); pause_kept = 0; }
 void sho_set_sound_levels(int music, int sfx) { snd_music = music < 0 ? 0 : music > 10 ? 10 : music; snd_sfx = sfx < 0 ? 0 : sfx > 10 ? 10 : sfx; }
@@ -656,4 +673,14 @@ int sho_load_music(const char *directory, unsigned sample_rate, char *err, size_
         }
     }
     return loaded;
+}
+
+/* ---- a small log for problem reports (shangon.log in the game folder): what the display and sound are doing ---- */
+#include <stdarg.h>
+static FILE *diag_f;
+void sho_diag_open(const char *path) { if (diag_f) fclose(diag_f); diag_f = path ? fopen(path, "w") : NULL; }
+void sho_diag(const char *fmt, ...) {
+    if (!diag_f) return;
+    va_list ap; va_start(ap, fmt); vfprintf(diag_f, fmt, ap); va_end(ap);
+    fputc('\n', diag_f); fflush(diag_f);
 }

@@ -3,8 +3,10 @@
 **Native Port + Mega Drive Original Mode Mod** – a native Windows, macOS and Linux port of the arcade game Super Hang-On,
 with an optional Mega Drive Original Mode.
 
+I have made a video explaining this project here: https://www.youtube.com/watch?v=mqXxxJ72bdk
+
 One source tree that builds the Windows `SuperHangOn.exe`, the macOS `SuperHangOn.app`
-(universal: Apple Silicon + Intel) and the Linux `SuperHangOn` (SDL2). Version 0.9.32 alpha.
+(universal: Apple Silicon + Intel) and the Linux `SuperHangOn` (SDL2). Version 0.9.34 alpha.
 
 **You must supply your own game data.** No ROMs are included.
 

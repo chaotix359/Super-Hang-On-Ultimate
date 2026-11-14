@@ -151,8 +151,9 @@ static void draw_layer(int which, int category, uint8_t primask) {
             int vy = (y + (eyy & 0x1ff)) & 511, vx = (scr_x + sx) & 1023;
             /* Widescreen: race backdrops are two-page panoramas whose scroll is limited so the
              * join at virtual x=512 stays just beyond the 4:3 edge. In the extra right-hand area,
-             * continue the left page's last tile column instead of showing the mismatched join. */
-            if (scr_x >= SHO_W && vx >= 512 && vx < 512 + g_xo + 16) vx = 504 + (vx & 7);
+             * mirror the left page's end instead of showing the mismatched join (a mirrored skyline
+             * reads as more of the same; a repeated column looked like a fence across 21:9's margin). */
+            if (scr_x >= SHO_W && vx >= 512 && vx < 512 + g_xo + 16) vx = 1023 - vx;   /* the left page's end, mirrored */
             int key = ((vy >> 3) << 7) | (vx >> 3);
             if (key != last_key) {          /* new tile: fetch tilemap entry once per 8 pixels */
                 last_key = key;
@@ -427,5 +428,12 @@ void sho_video_render(uint32_t *fb) {
             }
             o[x] = rgb[idx & (NPAL * 2 - 1)];
         }
+    }
+    {   /* wide views on the class and music select screens: their tilemaps are one page wide, so beyond the 4:3
+           right-hand edge the next page (another copy of the map, or backwards text) would show. Fill that side
+           with each row's plain background colour, as the left-hand side already shows it. */
+        extern long sho_menu_last_frame, sho_frame_no;
+        if (g_xo && sho_frame_no - sho_menu_last_frame <= 2)
+            for (int y = 0; y < SHO_H; y++) { uint32_t *o = fb + y * g_w, c = o[0]; for (int x = g_xo + SHO_W; x < g_w; x++) o[x] = c; }
     }
 }

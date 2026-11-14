@@ -1,4 +1,4 @@
-SUPER HANG-ON ULTIMATE - NATIVE WINDOWS 11 BUILD   v0.9.32 alpha
+SUPER HANG-ON ULTIMATE - NATIVE WINDOWS 11 BUILD   v0.9.34 alpha
 Native Port + Mega Drive Original Mode Mod
 =========================================================
 
@@ -8,6 +8,52 @@ THE LAUNCHER (SETTINGS SCREEN)
   Enter or PLAY starts, Esc quits. A pad works too (d-pad, A, Start). Click the FOLDER line to open the game folder.
   Underneath: whether shangon.zip and the Mega Drive ROM were found. After PLAY a loading bar shows what is being
   got ready. Start with -play (or set [launcher] show=0 in shangon.ini) to skip it.
+
+WHAT'S NEW IN 0.9.34
+- CONFIGURE CONTROLS on the launcher (above PLAY; Enter or a click opens it). Two tabs (Tab or a click switches):
+  CONTROLLER: a DEVICE list of the controllers your system has (ANY CONTROLLER, or one by name), and a picture of an
+    Xbox-style pad with every button labelled with what it does. Click a button's label (or move to it and press
+    Enter) to pick its job: ACCELERATE, BRAKE, TURBO, STEER LEFT, STEER RIGHT, START, COIN or nothing. Buttons light up
+    on the picture as you press them, so you can see which is which on your pad. CONFIGURE WITH CONTROLLER asks for
+    each of the game's controls in turn: press the button you want for it (Space skips one, Esc cancels and puts
+    things back). RESET TO DEFAULTS restores the usual layout. The left stick always steers, the stick and d-pad
+    always move through menus, and in Original Mode's menus A selects and B goes back whatever they do in a race.
+  KEYBOARD: up to four keys for each of STEER LEFT, STEER RIGHT, ACCELERATE, BRAKE, TURBO, START, COIN and PAUSE.
+    Click a box (or move to it and press Enter), then press the key; Delete or Backspace empties a box; a key already
+    used elsewhere moves to the new box. F1-F12 and Esc keep their own jobs.
+  A controller works the whole screen as well: the d-pad or left stick moves (across the picture from one column
+  of buttons to the other), A opens a list or presses a button, up / down and A choose from the list, B closes it.
+  The picture still lights up as you press things.
+  Saved in shangon.ini: [pad] actions= and device=, [keys_windows] keys=.
+- The mouse pointer now stays visible on the launcher in fullscreen (it still hides once the game starts).
+- Windows: controllers that are not Xbox-style (XInput) pads now work too - PlayStation pads (DualShock 4,
+  DualSense) and anything else in Windows' own game controller list (the one in "Set up USB game controllers").
+  Nothing to set up: with DEVICE on ANY CONTROLLER they are used straight away, by USB or Bluetooth. PlayStation
+  pads are read in their own layout (Cross = A, Circle = B, Square = X, Triangle = Y, L1/R1 = LB/RB, L2/R2 = LT/RT,
+  Share = Back, Options = Start); others as buttons 1-12 = A B X Y LB RB LT RT Back Start L3 R3. Before this
+  version the Windows build only saw Xbox-style pads, so a DualShock 4 did nothing unless Steam or DS4Windows was
+  making it look like one (that still works, and then it appears as XBOX CONTROLLER).
+- Fixed: the game ran in slow motion on some PCs (reported on a 144 Hz monitor). The game used to trust the refresh
+  rate Windows reports and count one picture as one refresh; when pictures actually reach the screen at a different
+  rate (a driver frame limit, a second monitor at another rate, variable refresh, an older GPU driver) that made the
+  game too slow or too fast. It now measures how often pictures really appear and paces the game by that.
+- Choppy music: the same fault starved the sound of data, so this should cure it on affected PCs. In addition the
+  amount of sound kept in reserve now grows by itself whenever the sound runs dry (up to 200 ms).
+- shangon.log (in the game folder) is written on every run: the display's reported and measured rate, the game's
+  speed and how often the sound ran dry. If the game still runs wrongly for someone, that file says why.
+
+WHAT'S NEW IN 0.9.33
+- Ultrawide display shapes: 18:9, 19:9, 20:9 and 21:9 join 16:9 and 4:3. F9 steps through them (16:9, 18:9, 19:9,
+  20:9, 21:9, 4:3; Shift+F9 goes back), as do the launcher's Display line and the new DISPLAY line on the Original
+  Mode pause menu (CONTINUE / DISPLAY / SOUND / EXIT; left/right or select). The game shows more of the road and
+  scenery to the sides and the HUD moves out to the corners, as in 16:9. On a screen narrower than the shape you pick
+  there are black bars above and below; a screen of that shape is filled. 21:9 is the shape of 21:9 monitors
+  (2560x1080, 3440x1440). shangon.ini: [video] aspect=16:9 (or 18:9, 19:9, 20:9, 21:9, 4:3).
+- Wide views: beyond the original right-hand edge the race backdrops now continue as a mirror of the skyline, not a
+  repeated strip.
+- Fixed: changing the display shape while the game was paused scrambled the picture.
+- Fixed: in the wide shapes the arcade's class and music select screens showed a second copy of the map / backwards
+  text on the right; that side is now the screen's plain background colour, as on the left.
 
 WHAT'S NEW IN 0.9.32
 - Launcher: the loading bar now sits between the ROM lines and the folder line.
@@ -498,10 +544,13 @@ XBOX-STYLE GAMEPAD
 
 KEYBOARD
 --------
+  (These are the defaults. The launcher's CONFIGURE CONTROLS screen changes the keys for steering, throttle, brake,
+  supercharger, coin, start and pause, and what each controller button does.)
   Left/Right or A/D ...... Steer       Up / W / Z / Ctrl ... Throttle
   Down / S / X ........... Brake       Space / Shift ....... Supercharger
   5 or C ................. Coin        1 or Enter .......... Start
-  F9 ..................... 16:9 / 4:3  F8 .................. Scaling filter (sharp / smooth / sharp-bilinear)
+  F9 ..................... Display shape: 16:9, 18:9, 19:9, 20:9, 21:9, 4:3 (Shift+F9 back)
+  F8 ..................... Scaling filter (sharp / smooth / sharp-bilinear)
   Alt+Enter or F11 ....... Fullscreen  Esc ................. Leave fullscreen
   Alt+F4 ................. Quit        P ................... Pause      F3 ..... Reset
   F2 (hold) .............. Arcade test/service menu   9 ...... Service coin

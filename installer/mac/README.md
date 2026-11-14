@@ -10,7 +10,7 @@ Anywhere with Python 3 (Windows, Mac or Linux):
 
     python3 installer/mac/build-installer.py
 
-The result is `installer/mac/output/SuperHangOnUltimate-Mac-Installer-0.9.32.zip`. The script refuses to build if `src/gen`,
+The result is `installer/mac/output/SuperHangOnUltimate-Mac-Installer-0.9.34.zip`. The script refuses to build if `src/gen`,
 `recomp/overrides`, a ROM or a built program would end up in it. (No compiler is bundled: Macs use Apple's Command Line Tools.)
 
 ## What the installer does on the user's Mac
