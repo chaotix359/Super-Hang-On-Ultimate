@@ -246,6 +246,9 @@ static void read_menu_keys(const sho_input *in) {
 /* Original Mode state                                                 */
 /* ------------------------------------------------------------------ */
 static int cur_menu, cur_title, cur_modesel, cur_part, cur_mech, sel_course, browse[NPART];
+/* the mode choice: ARCADE MODE, ORIGINAL MODE, (3D SETTINGS, when the frontend shows stereo 3D,) EXIT GAME */
+static int pm_3d_on(void); static int modesel_n(void) { return pm_3d_on() ? 4 : 3; }
+static const char *modesel_item(int i) { static const char *const it[4] = { "ARCADE MODE", "ORIGINAL MODE", "3D SETTINGS", "EXIT GAME" }; return it[i < 2 || pm_3d_on() ? i : 3]; }
 static int launch_step, launch_timer, launch_course;
 static int racing, race_frames, race_done, race_retired, crashes, brake_frames, crash_prev, back_held;
 static int stage_prev, gap_timer; float gap_secs;
@@ -514,10 +517,12 @@ static void menu_logic(void) {
     switch (phase) {
     case PH_MODESEL:
         if (getenv("LIVEDBG")) fprintf(stderr, "modesel %ld ok %d held %d\n", (long)sho_frame_no, k_ok, held[4]);
-        if (k_up) cur_modesel = (cur_modesel + 2) % 3;
-        if (k_down) cur_modesel = (cur_modesel + 1) % 3;
+        if (sho_stereo_menu_shown()) break;      /* the 3D settings are up over the list: the frontend works them */
+        if (k_up) cur_modesel = (cur_modesel + modesel_n() - 1) % modesel_n();
+        if (k_down) cur_modesel = (cur_modesel + 1) % modesel_n();
+        if (k_ok && pm_3d_on() && cur_modesel == 2) { sho_stereo_menu(1); break; }   /* 3D SETTINGS */
         if (k_back) phase = PH_ARCADE;
-        if (k_ok && cur_modesel == 2) { exit_request = 1; break; }
+        if (k_ok && cur_modesel == modesel_n() - 1) { exit_request = 1; break; }
         if (k_ok) { if (cur_modesel == 0) { phase = PH_ARCADE; arcade_ok = 1; if (!select_active()) { arcade_pass = 600; arc_t = 1; } } else start_original(); }
         break;
     case PH_TITLE: {
@@ -1224,19 +1229,17 @@ static void draw_result(void) {
     footer(result_ready ? "PRESS A" : "PLEASE WAIT...");
 }
 static void draw_modesel_title(void) {
-    static const char *const items[3] = { "ARCADE MODE", "ORIGINAL MODE", "EXIT GAME" };
-    for (int i = 0; i < 3; i++) {
-        int y = 112 + i * 12, w = (int)strlen(items[i]) * 8, x = XO + 167 - w / 2, sel = cur_modesel == i;
-        sho_video_arcade_text(FB, FW, x, y, items[i], sel ? 1 : 2);   /* yellow when chosen, else white (the title's own colours) */
+    if (sho_stereo_menu_shown()) return;         /* (the 3D settings take the list's place) */
+    for (int i = 0; i < modesel_n(); i++) {
+        int y = 112 + i * 12, w = (int)strlen(modesel_item(i)) * 8, x = XO + 167 - w / 2, sel = cur_modesel == i;
+        sho_video_arcade_text(FB, FW, x, y, modesel_item(i), sel ? 1 : 2);   /* yellow when chosen, else white (the title's own colours) */
         if (sel && (sho_frame_no / 16) % 2 == 0) sho_video_arcade_text(FB, FW, x - 14, y, ">", 1);
     }
 }
 static void draw_modesel(void) {
-    bx(56, 72, 208, 88, C_YEL);
+    bx(56, 72, 208, 34 + 18 * modesel_n(), C_YEL);
     textc(80, "SELECT MODE", C_CYN);
-    text(108, 100, "ARCADE MODE", cur_modesel == 0 ? C_YEL : C_WHT); cursor(96, 100, cur_modesel == 0);
-    text(108, 118, "ORIGINAL MODE", cur_modesel == 1 ? C_YEL : C_WHT); cursor(96, 118, cur_modesel == 1);
-    text(108, 136, "EXIT GAME", cur_modesel == 2 ? C_YEL : C_WHT); cursor(96, 136, cur_modesel == 2);
+    for (int i = 0; i < modesel_n(); i++) { text(108, 100 + 18 * i, modesel_item(i), cur_modesel == i ? C_YEL : C_WHT); cursor(96, 100 + 18 * i, cur_modesel == i); }
 }
 static void draw_title(void) {
     text2c(40, "ORIGINAL MODE", C_YEL);
@@ -1546,7 +1549,13 @@ int sho_md_pause_allowed(void) { return cfg_enh && md_ok() && game_state() == 2 
    with left/right or select, done by the frontend), and a sound page with music and sound effect levels (0-10), in
    the Mega Drive font: highlighted line yellow with the ">" cursor, others white */
 static int pm_page, pm_cur, pm_prev_nav[6];
-void md_pause_reset(void) { pm_page = 0; pm_cur = 0; for (int i = 0; i < 6; i++) pm_prev_nav[i] = 1; }
+static int pm_3d, pm_hold[2];
+static int pm_3d_on(void) { return pm_3d; }   /* pm_3d: the frontend shows stereo 3D, so the menu has a 3D page (page 2) */
+void md_pause_enable_3d(int on) { pm_3d = on; }
+void md_pause_reset(void) { pm_page = 0; pm_cur = 0; for (int i = 0; i < 6; i++) pm_prev_nav[i] = 1; pm_hold[0] = pm_hold[1] = 0; }
+void md_pause_goto_3d(void) { if (pm_3d) { pm_page = 2; pm_cur = 0; } }
+int sho_stereo_menu_extra_get(int i, const char **label, int **value, int *lo, int *hi, int *step);
+void sho_stereo_menu_extra_text(int i, char *buf, int n);
 static int pm_tick;
 /* the menu is centred on the screen: PAUSE at y 80, options at y 104/120/136/152,
    each line centred on x 160 to the pixel; the cursor sits left of the text without moving it */
@@ -1570,6 +1579,15 @@ static void pm_level(int y, const char *name, int v, int sel) {
     if (v > 0) md_chr_mirror(x + 8 * 8, y, '>', pal);
     if (v < 10) md_chr(x + 13 * 8, y, '>', pal);
 }
+/* a line of the 3D page, NAME  < value >: a longer name and value than the level lines, centred the same way */
+static void pm_value(int y, const char *name, const char *v, int sel, int left, int right) {
+    char b[40]; snprintf(b, sizeof b, "%-13s   %-8s  ", name, v);
+    int x = 160 - (int)strlen(b) * 4, pal = sel ? MDP_YELLOW : MDP_WHITE;
+    pm_text(x, y, b, pal);
+    if (sel && (pm_tick / 16) % 4 != 3) md_chr(x - 16, y, '>', MDP_WHITE);
+    if (left) md_chr_mirror(x + 14 * 8, y, '>', pal);
+    if (right) md_chr(x + 25 * 8, y, '>', pal);
+}
 /* the DISPLAY line, DISPLAY  < 16:9 >, laid out like a level line (the shapes wrap round, so both arrows always show) */
 static void pm_choice(int y, const char *name, const char *v, int sel) {
     char b[32]; snprintf(b, sizeof b, "%-7s   %-4s  ", name, v);
@@ -1588,26 +1606,71 @@ int md_pause_menu(uint32_t *fb, int width, int tick, const sho_input *in, int *m
     }
     int act = 0;
     if (!in) {}
-    else if (pm_page == 0) {   /* 0 CONTINUE, 1 DISPLAY, 2 SOUND, 3 EXIT */
-        if (e[0]) pm_cur = (pm_cur + 3) % 4;
-        if (e[1]) pm_cur = (pm_cur + 1) % 4;
+    else if (pm_page == 0) {   /* 0 CONTINUE, 1 DISPLAY, (2 3D,) SOUND, EXIT */
+        int n = pm_3d ? 5 : 4, snd = pm_3d ? 3 : 2;
+        if (e[0]) pm_cur = (pm_cur + n - 1) % n;
+        if (e[1]) pm_cur = (pm_cur + 1) % n;
         if (e[5]) act = 1;                                    /* back = continue */
         if (pm_cur == 1 && e[2]) act = 4;                     /* the previous display shape */
         if (pm_cur == 1 && e[3]) act = 3;                     /* the next one */
-        if (e[4]) { if (pm_cur == 0) act = 1; else if (pm_cur == 1) act = 3; else if (pm_cur == 2) { pm_page = 1; pm_cur = 0; } else act = 2; }
+        if (e[4]) { if (pm_cur == 0) act = 1; else if (pm_cur == 1) act = 3; else if (pm_3d && pm_cur == 2) { pm_page = 2; pm_cur = 0; }
+                    else if (pm_cur == snd) { pm_page = 1; pm_cur = 0; } else act = 2; }
+    } else if (pm_page == 2) {   /* 3D: MODE, DEPTH, POP OUT, SWAP EYES, the frontend's lines (the VR screen), BACK */
+        int nx = 0; while (nx < 8 && sho_stereo_menu_extra_get(nx, NULL, NULL, NULL, NULL, NULL)) nx++;
+        int n = 4 + nx + 1;
+        if (e[0]) pm_cur = (pm_cur + n - 1) % n;
+        if (e[1]) pm_cur = (pm_cur + 1) % n;
+        int d = 0;      /* left / right: once, then repeating while held */
+        for (int i = 0; i < 2; i++) { if (!now[2 + i]) { pm_hold[i] = 0; continue; } int h = ++pm_hold[i]; if (e[2 + i] || (h > 20 && h % 4 == 0)) d = i ? 1 : -1; }
+        if (d && pm_cur < 4) {
+            sho_stereo st; sho_get_stereo(&st);
+            if (pm_cur == 0) st.mode = (st.mode + d + 3) % 3; else if (pm_cur == 1) st.depth += d; else if (pm_cur == 2) st.pop += d; else st.swap = !st.swap;
+            sho_set_stereo(&st); act = 5;                     /* (the frontend saves it; the paused picture changes at once) */
+        } else if (d && pm_cur < 4 + nx) {
+            int *v, lo, hi, step; sho_stereo_menu_extra_get(pm_cur - 4, NULL, &v, &lo, &hi, &step);
+            char t0[16], t1[16]; sho_stereo_menu_extra_text(pm_cur - 4, t0, sizeof t0);
+            int nv = *v + d * step, old = *v;
+            *v = nv; sho_stereo_menu_extra_text(pm_cur - 4, t1, sizeof t1); *v = old;
+            { int named = 0; for (const char *c = t0; *c; c++) if (*c >= 'A' && *c <= 'Z') named = 1;      /* a line of named choices goes round */
+              if (named) { if (nv < lo) nv = hi; else if (nv > hi) nv = lo; } }
+            if (nv < lo) nv = lo; if (nv > hi) nv = hi;
+            *v = nv; act = 6;                                 /* (the frontend applies and saves it) */
+        }
+        if (e[5] || (e[4] && pm_cur == n - 1)) { pm_page = 0; pm_cur = 2; }
     } else {
         if (e[0]) pm_cur = (pm_cur + 2) % 3;
         if (e[1]) pm_cur = (pm_cur + 1) % 3;
         int *lv = pm_cur == 0 ? music : pm_cur == 1 ? sfx : NULL;
         if (lv && e[2] && *lv > 0) (*lv)--;
         if (lv && e[3] && *lv < 10) (*lv)++;
-        if (e[5] || (e[4] && pm_cur == 2)) { pm_page = 0; pm_cur = 2; }
+        if (e[5] || (e[4] && pm_cur == 2)) { pm_page = 0; pm_cur = pm_3d ? 3 : 2; }
     }
-    if (!((tick / 48) & 1)) { static const char word[] = "PAUSE"; for (int i = 0; word[i]; i++) md_chr(124 + i * 16, 80, word[i], MDP_YELLOW); }   /* 72 px wide, centred */
+    if (pm_page != 2 && !((tick / 48) & 1)) { static const char word[] = "PAUSE"; for (int i = 0; word[i]; i++) md_chr(124 + i * 16, 80, word[i], MDP_YELLOW); }   /* 72 px wide, centred */
     pm_tick = tick;
-    if (pm_page == 0) {
+    if (pm_page == 0 && pm_3d) {
+        pm_line(104, "CONTINUE", pm_cur == 0); pm_choice(120, "DISPLAY", display ? display : "", pm_cur == 1);
+        pm_line(136, "3D", pm_cur == 2); pm_line(152, "SOUND", pm_cur == 3); pm_line(168, "EXIT", pm_cur == 4);
+    } else if (pm_page == 0) {
         pm_line(104, "CONTINUE", pm_cur == 0); pm_choice(120, "DISPLAY", display ? display : "", pm_cur == 1);
         pm_line(136, "SOUND", pm_cur == 2); pm_line(152, "EXIT", pm_cur == 3);
+    } else if (pm_page == 2) {
+        static const char *const modes[3] = { "OFF", "HALF SBS", "FULL SBS" };
+        sho_stereo st; sho_get_stereo(&st); char v[16];
+        int nx = 0; while (nx < 8 && sho_stereo_menu_extra_get(nx, NULL, NULL, NULL, NULL, NULL)) nx++;
+        int dy = 4 + nx + 1 > 9 ? 12 : 16;                    /* (many lines: closer together) */
+        int y = 112 - (4 + nx + 1) * dy / 2 - 10;             /* the block centred on line 112, under its title */
+        pm_text(160 - 2 * 8 + 4, y, "3 D", MDP_YELLOW); y += 20;
+        pm_value(y, "MODE", modes[st.mode], pm_cur == 0, 1, 1); y += dy;
+        snprintf(v, sizeof v, "%d", st.depth); pm_value(y, "DEPTH", v, pm_cur == 1, st.depth > 0, st.depth < SHO_3D_MAX_DEPTH); y += dy;
+        snprintf(v, sizeof v, "%d", st.pop); pm_value(y, "POP OUT", v, pm_cur == 2, st.pop > 0, st.pop < 10); y += dy;
+        pm_value(y, "SWAP EYES", st.swap ? "YES" : "NO", pm_cur == 3, 1, 1); y += dy;
+        for (int i = 0; i < nx; i++, y += dy) {
+            const char *lab; int *val, lo, hi, step; sho_stereo_menu_extra_get(i, &lab, &val, &lo, &hi, &step);
+            sho_stereo_menu_extra_text(i, v, sizeof v);
+            int named = v[0] >= 'A' && v[0] <= 'Z';
+            pm_value(y, lab, v, pm_cur == 4 + i, named || *val > lo, named || *val < hi);
+        }
+        pm_line(y, "BACK", pm_cur == 4 + nx);
     } else {
         pm_level(104, "MUSIC", *music, pm_cur == 0); pm_level(120, "EFFECTS", *sfx, pm_cur == 1); pm_line(136, "BACK", pm_cur == 2);
     }

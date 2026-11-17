@@ -44,6 +44,8 @@ int sho_md_dev_race_get(void);
 void sho_md_cheat_upgrade(void);
 void sho_md_cheat_money(void);                     /* development: Ctrl+9 on the Original Mode menu = the most money the game holds */                   /* development: Ctrl+8 on the Original Mode menu = fully upgraded bike */                    /* Mega Drive mode, during a race: Start pauses */
 void md_pause_reset(void);
+void md_pause_enable_3d(int on);   /* the pause menu gets a 3D page (md_pause_menu then also returns 5 = a 3D setting changed, 6 = a frontend line changed) */
+void md_pause_goto_3d(void);       /* after md_pause_reset: open on the 3D page */
 /* pause menu: draws and handles input; returns 0 = stay, 1 = continue, 2 = exit to title; levels 0-10 */
 int md_pause_menu(uint32_t *fb, int width, int tick, const sho_input *in, int *music, int *sfx, const char *display);          /* draw Original Mode screens / race HUD */
 int md_mute(void);

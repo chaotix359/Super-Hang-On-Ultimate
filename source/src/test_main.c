@@ -22,10 +22,15 @@ static float autopilot(void) {   /* steer to keep the road centred (reads the di
     float v = -1.5f * err / 96.0f; if (v > 1) v = 1; if (v < -1) v = -1; return v;
 }
 
+static void (*par_job)(void);
+void test_par_start(void (*job)(void)) { par_job = job; }           /* (as a worker would: the job runs after the left eye) */
+void test_par_wait(void) { if (par_job) par_job(); par_job = NULL; }
 static void write_ppm(const char *p) {
-    FILE *f = fopen(p, "wb"); const uint32_t *fb = sho_framebuffer();
-    fprintf(f, "P6\n%d %d\n255\n", sho_width(), SHO_H);
-    for (int i = 0; i < sho_width() * SHO_H; i++) { uint8_t c[3] = { fb[i] >> 16, fb[i] >> 8, fb[i] }; fwrite(c, 1, 3, f); }
+    int w = sho_width(); const uint32_t *fb = sho_framebuffer();
+    if (getenv("STEREO") && !getenv("MONOSHOT")) fb = sho_present_frame(&w);   /* 3D: left | right (MONOSHOT: the normal framebuffer all the same) */
+    FILE *f = fopen(p, "wb");
+    fprintf(f, "P6\n%d %d\n255\n", w, SHO_H);
+    for (int i = 0; i < w * SHO_H; i++) { uint8_t c[3] = { fb[i] >> 16, fb[i] >> 8, fb[i] }; fwrite(c, 1, 3, f); }
     fclose(f);
 }
 
@@ -69,6 +74,16 @@ int main(int argc, char **argv) {
     if (getenv("ROMPEEK")) { unsigned a_ = (unsigned)strtoul(getenv("ROMPEEK"), 0, 16); printf("ROM %06x:", a_); for (int j = 0; j < 32; j++) printf(" %02x", M->mrom[a_ + j]); printf("\n"); }
     if (getenv("DESCDUMP")) for (int i = 0; i < 24; i++) { uint32_t d = (M->mrom[0x8aec+i*4]<<24)|(M->mrom[0x8aec+i*4+1]<<16)|(M->mrom[0x8aec+i*4+2]<<8)|M->mrom[0x8aec+i*4+3];
         printf("DESC %2d @%06x:", i, d); for (int j = 0; j < 0x24; j += 2) printf(" %04x", be16r(M->mrom, d + j)); printf("\n"); }
+    if (getenv("STEREO")) {   /* STEREO=mode,depth,pop,swap[,menu] (mode 1 half / 2 full SBS): screenshots are left | right */
+        sho_stereo st = { 1, 8, 0, 0 }; int menu = 0;
+        sscanf(getenv("STEREO"), "%d,%d,%d,%d,%d", &st.mode, &st.depth, &st.pop, &st.swap, &menu);
+        sho_set_stereo(&st); sho_stereo_menu(menu);
+        if (getenv("STEREO_PAR")) { extern void test_par_start(void (*job)(void)); extern void test_par_wait(void); sho_stereo_set_worker(test_par_start, test_par_wait); }   /* the two-renderer path (run in turn here) */
+        sho_pause_enable_3d(1);      /* the pause menu's 3D page, as on Windows; PAUSEX: with the VR screen lines */
+        if (getenv("PAUSEX")) { static int h_ = -10, d_ = 200, w_ = 320; sho_stereo_menu_extra("SCREEN HEIGHT", &h_, -300, 300, 5); sho_stereo_menu_extra("SCREEN DIST", &d_, 50, 2000, 10); sho_stereo_menu_extra("SCREEN WIDTH", &w_, 50, 4000, 10);
+            static int s_, a_ = 30, t_; static const char *const sn[2] = { "TILT", "STICK" }, *const tn[2] = { "NORMAL", "SWAPPED" };
+            sho_stereo_menu_extra_choice("STEERING", &s_, 2, sn); sho_stereo_menu_extra("TILT ANGLE", &a_, 10, 60, 5); sho_stereo_menu_extra_choice("TRIGGERS", &t_, 2, tn); }
+    }
     if (getenv("WIDE")) sho_set_widescreen(1);
     if (getenv("VIEWW")) sho_set_view_width(atoi(getenv("VIEWW")));   /* any view width, e.g. 368 or 380 (MacBook screens) */
     if (getenv("MDMUSIC")) { sho_md_set_music(1); printf("md music: %s\n", sho_md_music_active() ? "on" : "off (no ROM)"); if (sho_md_music_active()) sho_silence_music(); }
@@ -189,6 +204,7 @@ int main(int argc, char **argv) {
             if (act == 3 || act == 4) {   /* the display shape: the next / previous one (as the frontends do) */
                 extern int sho_test_shape_width(int); shape_i = (shape_i + (act == 3 ? 1 : 5)) % 6; sho_pause_set_display(sho_test_shape_name(shape_i)); sho_set_view_width(sho_test_shape_width(shape_i));
                 printf("f%d display -> width %d\n", f, sho_width()); act = 0; }
+            if (act == 5 || act == 6) { sho_stereo st_; sho_get_stereo(&st_); printf("f%d 3D page: action %d, mode %d depth %d pop %d swap %d\n", f, act, st_.mode, st_.depth, st_.pop, st_.swap); act = 0; }
             if (act) { printf("f%d pause action %d levels %d %d\n", f, act, m, e); sho_pause_end(); done_ = 1; }
             if (getenv("SHOTS") && f % atoi(getenv("SHOTS")) == 0) { char p2[64]; snprintf(p2, sizeof p2, "shot_%05d.ppm", f); write_ppm(p2); } continue; }
         run:
@@ -225,6 +241,15 @@ int main(int argc, char **argv) {
         char p[64];
         if (getenv("VOICES") && f == atoi(getenv("VOICES"))) { extern void sho_debug_voices(void); sho_debug_voices(); }
         if (getenv("SHOTS") && f % atoi(getenv("SHOTS")) == 0) { snprintf(p, sizeof p, "shot_%05d.ppm", f); write_ppm(p); }
+        if (getenv("STLOG") && f % atoi(getenv("STLOG")) == 0) {   /* sprites: slot, size step, top, bottom, x, zoom; and the horizon row */
+            extern uint8_t sho_obj_scale[256]; extern int sho_video_horizon(void);
+            printf("RD %d hz %d ctl %d:", f, sho_video_horizon(), M->road_control & 3);
+            for (int y = 96; y < 224; y += 4) { uint16_t r0 = be16r(M->roadbuf, y * 2), r1 = be16r(M->roadbuf, (0x100 + y) * 2); printf(" %d:%s%d/%s%d", y, r0 & 0x800 ? "x" : "", (r0 >> 1) & 0xff, r1 & 0x800 ? "x" : "", (r1 >> 1) & 0xff); }
+            printf("\n");
+            for (int i = 0; i < 0x1000; i += 16) { uint16_t d0 = be16r(M->sprram, i), d1 = be16r(M->sprram, i + 2), d2 = be16r(M->sprram, i + 4), d5 = be16r(M->sprram, i + 10);
+                if (d2 & 0x8000) break; if ((d2 & 0x4000) || (d0 & 0xff) >= (d0 >> 8)) continue;
+                printf("ST %d slot %d step %d top %d bottom %d x %d zoom %d hz %d\n", f, i / 16, sho_obj_scale[i / 16], d0 & 0xff, d0 >> 8, (d1 & 0xfff) - 184, d5 & 0x1f, sho_video_horizon()); }
+        }
         if (getenv("FINDUMP")) { extern int md_finish_t(void); int ft = md_finish_t(); static const int ks[] = { 1, 3, 6, 10, 15, 22, 30, 40, 50 };
             for (int q = 0; q < 9; q++) if (ft == ks[q]) { char p3[64]; snprintf(p3, sizeof p3, "fin_%02d.ppm", ks[q]); write_ppm(p3); } }
     }

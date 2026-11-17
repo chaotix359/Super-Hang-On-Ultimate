@@ -7,6 +7,8 @@
 #include "gen/main_rc.h"
 #include "gen/sub_rc.h"
 
+void sho_obj_scale_note(int slot, int step);   /* stereo 3D: records an object's size step for its sprite slot (sho_core.c) */
+unsigned int m68k_read_memory_16(unsigned int address);
 extern int sho_wide_xo;   /* widescreen: extra pixels on each side of the original 320 (0 = 4:3) */
 
 /* cmpi.w #imm, Dn   (8 cycles, 4 bytes) */

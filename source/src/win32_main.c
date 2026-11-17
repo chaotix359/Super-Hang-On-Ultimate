@@ -17,6 +17,7 @@
 #include <math.h>
 #include "sho_core.h"
 #include "win32_d3d11.h"
+#include "win32_vr.h"
 #include "launcher_core.h"
 #include "sho_views.h"
 #include "sho_pace.h"
@@ -34,6 +35,10 @@ extern int sho_recomp;
 
 static HWND g_hwnd;
 static int g_dev_dirty = 1;   /* the controller list needs making again (WM_DEVICECHANGE) */
+static int g_vr_stick, g_vr_swap, g_vr_twist, g_vr_twist_angle;   /* [vr] steering (1 = thumbstick), swap_triggers, throttle (1 = twist grip), twist_angle */
+static int g_vr_height, g_vr_dist, g_vr_width, g_vr_angle;   /* [vr] screen_height, screen_distance, screen_width (cm), steer_angle */
+static int g_want_pause3d, g_close_pause;   /* F6 / the VR controller's Y during an Original Mode race: the game's pause menu on its 3D page; again: close it */
+static int g_vr;   /* a headset session is up (win32_vr.c): [vr] enabled=1 or -vr */
 static int g_md_present, g_pause_menu, g_in_launcher;   /* g_in_launcher: the settings screen is in the window */
 static void reset_to_title(void);
 static void apply_sound_levels(int save);
@@ -77,6 +82,10 @@ static void write_default_ini(void) {
           "aspect=16:9       ; 16:9, 18:9, 19:9, 20:9, 21:9 or 4:3 (F9 steps through them, Shift+F9 back)\n"
           "filter=2          ; 0 sharp, 1 smooth, 2 sharp-bilinear (F8 cycles)\n"
           "stretch=0         ; 1 = stretch to fill the screen (distorts the picture)\n"
+          "3d=0              ; stereo 3D side by side: 0 off, 1 half SBS (3D TVs, Virtual Desktop / Bigscreen \"half SBS\"), 2 full SBS (F7 cycles; F6 = 3D menu)\n"
+          "3d_depth=13       ; 0-24: how deep the picture goes (game pixels between the two eyes' horizons)\n"
+          "3d_pop=8          ; 0-10: how far the near road and your bike come out in front of the screen\n"
+          "3d_swap=0         ; 1 = right eye first\n"
           "renderer=d3d11    ; d3d11 or gdi\n"
           "vrr=0             ; 1 = for G-Sync/FreeSync displays: present at the arcade rate with tearing allowed\n"
           "[input]\n"
@@ -97,6 +106,16 @@ static void write_default_ini(void) {
           "difficulty=1      ; 0 easy, 1 normal, 2 hard, 3 hardest\n"
           "time=1            ; time limit: 0 easy, 1 normal, 2 hard, 3 hardest\n"
           "free_play=0       ; 1 = no coins needed (press Start)\n"
+          "[vr]\n"
+          "enabled=1         ; 1 = play in a VR headset when one is connected (any OpenXR runtime: Virtual Desktop, Quest Link, SteamVR / Steam Link), else on the desktop; 0 = always the desktop (or start with -novr)\n"
+          "screen_distance=200 ; centimetres from you to the screen\n"
+          "screen_width=320  ; centimetres\n"
+          "screen_height=-10 ; centimetres: the screen's centre above (+) or below (-) eye level\n"
+          "steer_angle=30    ; degrees of handlebar tilt (one hand lower than the other) for full lock\n"
+          "steering=0        ; 0 = tilt the two controllers like handlebars, 1 = left thumbstick\n"
+          "swap_triggers=0   ; 0 = right trigger throttle, left trigger brake; 1 = the other way round\n"
+          "throttle=0        ; 0 = trigger, 1 = twist grip: hold the right grip button and roll that wrist back; both triggers brake\n"
+          "twist_angle=40    ; degrees of twist for full throttle\n"
           "[megadrive]\n"
           "enhancements=0    ; 1 = Original Mode (press Start on the title screen to choose it)\n"
           "controls=0        ; 1 = Mega Drive steering response (virtual handlebar)\n"
@@ -173,8 +192,62 @@ static void set_fullscreen(int on) {
     InvalidateRect(g_hwnd, NULL, TRUE);
 }
 
+/* A worker thread for the core's stereo 3D: it draws the right eye's picture while the game's thread draws the left
+   (sho_stereo_set_worker). It sleeps between jobs. */
+static HANDLE g_ew_thread, g_ew_go, g_ew_done; static void (*g_ew_job)(void);
+static DWORD WINAPI eye_worker(void *arg) {
+    (void)arg;
+    for (;;) { WaitForSingleObject(g_ew_go, INFINITE); if (g_ew_job) g_ew_job(); SetEvent(g_ew_done); }
+    return 0;
+}
+static void eye_worker_start(void (*job)(void)) { g_ew_job = job; SetEvent(g_ew_go); }
+static void eye_worker_wait(void) { WaitForSingleObject(g_ew_done, INFINITE); }
+static void eye_worker_init(void) {
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    if (si.dwNumberOfProcessors < 2) return;                   /* (one core: nothing to gain) */
+    g_ew_go = CreateEventA(NULL, FALSE, FALSE, NULL); g_ew_done = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (g_ew_go && g_ew_done) g_ew_thread = CreateThread(NULL, 0, eye_worker, NULL, 0, NULL);
+    if (g_ew_thread) sho_stereo_set_worker(eye_worker_start, eye_worker_wait);
+}
+/* stereo 3D (sho_core.h): [video] 3d, 3d_depth, 3d_pop, 3d_swap; F6 opens the 3D menu, F7 steps off / half / full SBS */
+static void load_stereo(void) {
+    sho_stereo st = { ini_int("video", "3d", 0), ini_int("video", "3d_depth", 13), ini_int("video", "3d_pop", 8), ini_int("video", "3d_swap", 0) };
+    sho_set_stereo(&st);
+}
+static void save_stereo(void) {
+    sho_stereo st; sho_get_stereo(&st);
+    ini_set_int("video", "3d", st.mode); ini_set_int("video", "3d_depth", st.depth);
+    ini_set_int("video", "3d_pop", st.pop); ini_set_int("video", "3d_swap", st.swap);
+}
+/* a VR screen line of the menu changed: move the screen and keep it */
+static void vr_screen_apply(void) {
+    vr_settings vs = { g_vr_dist / 100.0f, g_vr_width / 100.0f, g_vr_height / 100.0f, (float)g_vr_angle, g_vr_stick, g_vr_swap, g_vr_twist, (float)g_vr_twist_angle };
+    vr_configure(&vs);
+    ini_set_int("vr", "throttle", g_vr_twist);
+    ini_set_int("vr", "screen_height", g_vr_height); ini_set_int("vr", "screen_distance", g_vr_dist); ini_set_int("vr", "screen_width", g_vr_width);
+    ini_set_int("vr", "steering", g_vr_stick); ini_set_int("vr", "swap_triggers", g_vr_swap); ini_set_int("vr", "steer_angle", g_vr_angle);
+}
+/* a direction for the 3D menu (0 up, 1 down, 2 left, 3 right), from the keyboard or a VR controller's stick */
+static void stereo_menu_input(int k) {
+    int ch = sho_stereo_menu_key(k);
+    if (ch == 1) save_stereo();
+    if (ch == 2) vr_screen_apply();
+}
+/* F6 or the VR controller's Y: the 3D settings. Where the game has its own pause menu (an Original Mode race) they
+   are a page of it; anywhere else (the arcade game has no menu) the small 3D menu comes up over the running game. */
+static void toggle_3d_menu(void) {
+    if (sho_stereo_menu_shown()) { sho_stereo_menu(0); return; }
+    if (g_paused && g_pause_menu) { g_close_pause = 1; return; }
+    if (!g_paused && sho_md_pause_allowed()) { g_want_pause3d = 1; return; }
+    memset(g_keys, 0, sizeof g_keys);   /* (held arrows would never see their key-up in the game) */
+    sho_stereo_menu(1);
+}
 /* display aspect of the game image: the arcade monitor is 4:3 for 320 pixels; the 16:9 view keeps that pixel shape */
-static double image_aspect(void) { return g_stretch ? 0.0 : sho_shapes[g_shape].aspect; }   /* (the shape's own aspect: fills a screen of that shape exactly) */
+static double image_aspect(void) {   /* (the shape's own aspect: fills a screen of that shape exactly) */
+    sho_stereo st; sho_get_stereo(&st);
+    /* half SBS: the two eyes share the normal picture's shape; full SBS: each eye has it, twice as wide in all */
+    return g_stretch ? 0.0 : sho_shapes[g_shape].aspect * (st.mode == SHO_3D_FULL_SBS ? 2.0 : 1.0);
+}
 
 static void present_gdi(HDC dc) {
     RECT rc; GetClientRect(g_hwnd, &rc);
@@ -187,8 +260,9 @@ static void present_gdi(HDC dc) {
     if (y > 0) { RECT t = { 0, 0, cw, y }, b = { 0, y + h, cw, ch }; FillRect(dc, &t, black); FillRect(dc, &b, black); }
     SetStretchBltMode(dc, g_filter == 1 ? HALFTONE : COLORONCOLOR);
     if (g_filter == 1) SetBrushOrgEx(dc, 0, 0, NULL);
-    g_bmi.bmiHeader.biWidth = sho_width();
-    StretchDIBits(dc, x, y, w, h, 0, 0, sho_width(), SHO_H, sho_framebuffer(), &g_bmi, DIB_RGB_COLORS, SRCCOPY);
+    int fw; const uint32_t *fb = sho_present_frame(&fw);   /* (3D: left | right, twice the width) */
+    g_bmi.bmiHeader.biWidth = fw;
+    StretchDIBits(dc, x, y, w, h, 0, 0, fw, SHO_H, fb, &g_bmi, DIB_RGB_COLORS, SRCCOPY);
 }
 
 /* the launcher (settings screen, loading bar): its 1920x1080 picture, 16:9 with black bars */
@@ -227,7 +301,8 @@ static void present_loading(void) { pump_messages(); present_launcher(); }   /* 
 
 static int present(int sync_interval) {     /* returns 1 if the present waited for vblank */
     if (g_use_d3d) {
-        int r = d3d_present(sho_framebuffer(), sho_width(), SHO_H, image_aspect(), g_filter, sync_interval, g_vrr);
+        int fw; const uint32_t *fb = sho_present_frame(&fw);   /* (3D: left | right, twice the width) */
+        int r = d3d_present(fb, fw, SHO_H, image_aspect(), g_filter, sync_interval, g_vrr);
         if (r == 0) { g_use_d3d = 0; d3d_shutdown(); update_title(); }   /* device lost etc.: fall back */
         else return r == 1 && sync_interval > 0;
     }
@@ -278,8 +353,14 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             return 0;
         }
+        if (sho_stereo_menu_shown()) {   /* the 3D menu has the arrows (auto-repeat too); the game runs on underneath */
+            int k = w == VK_UP ? 0 : w == VK_DOWN ? 1 : w == VK_LEFT ? 2 : w == VK_RIGHT ? 3 : -1;
+            if (k >= 0) { stereo_menu_input(k); return 0; }
+            if (w == VK_ESCAPE || w == VK_F6) { if (!(l & (1 << 30))) sho_stereo_menu(0); return 0; }
+        } else if (w == VK_F6 && !(l & (1 << 30))) { toggle_3d_menu(); return 0; }
         if (w < 256) g_keys[w] = 1;
         if (l & (1 << 30)) return 0;   /* auto-repeat */
+        if (w == VK_F7) { sho_stereo st; sho_get_stereo(&st); st.mode = (st.mode + 1) % 3; sho_set_stereo(&st); save_stereo(); }
         if (w == VK_F11) set_fullscreen(!g_fullscreen);
         if (w == VK_ESCAPE && g_fullscreen) set_fullscreen(0);
         if (sho_key_is_action(KA_PAUSE, (int)w) && !(l & (1 << 30))) {   /* the pause key (P): in Mega Drive mode during a race this opens the pause menu */
@@ -699,6 +780,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     g_fullscreen = ini_int("video", "fullscreen", 1);
     g_shape = read_shape();
     g_filter = ini_int("video", "filter", 2) % 3;
+    load_stereo();
+    sho_pause_enable_3d(1);      /* the pause menu's 3D page */
+    eye_worker_init();
     g_stretch = ini_int("video", "stretch", 0);
     g_vrr = ini_int("video", "vrr", 0);
     ini_str("video", "renderer", "d3d11", s, sizeof s); int want_d3d = _stricmp(s, "gdi") != 0;
@@ -736,7 +820,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     memset(&g_bmi, 0, sizeof g_bmi);
     g_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); g_bmi.bmiHeader.biWidth = SHO_W; g_bmi.bmiHeader.biHeight = -SHO_H;
     g_bmi.bmiHeader.biPlanes = 1; g_bmi.bmiHeader.biBitCount = 32; g_bmi.bmiHeader.biCompression = BI_RGB;
-    g_use_d3d = want_d3d && d3d_init(g_hwnd, LC_IW > SHO_MAX_W ? LC_IW : SHO_MAX_W, LC_IH > SHO_H ? LC_IH : SHO_H);   /* big enough for the launcher picture */
+    g_use_d3d = want_d3d && d3d_init(g_hwnd, LC_IW > 2 * SHO_3D_SUB * SHO_MAX_W ? LC_IW : 2 * SHO_3D_SUB * SHO_MAX_W, LC_IH > SHO_H ? LC_IH : SHO_H);   /* big enough for the launcher picture */
     if (g_vrr && !(g_use_d3d && d3d_tearing_supported())) g_vrr = 0;
 
     if (show_launcher) {
@@ -863,6 +947,39 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     update_title();
     InvalidateRect(g_hwnd, NULL, TRUE);
 
+    /* VR is the default: with a headset connected the game starts in it, without one it quietly runs on the desktop
+       (-vr asks for it outright and says why it failed; -novr or [vr] enabled=0 never tries) */
+    if ((ini_int("vr", "enabled", 1) || strstr(cmd, "-vr")) && !strstr(cmd, "-novr")) {
+        g_vr_dist = ini_int("vr", "screen_distance", 200); g_vr_width = ini_int("vr", "screen_width", 320);
+        g_vr_height = (int)(short)ini_int("vr", "screen_height", -10); g_vr_angle = ini_int("vr", "steer_angle", 30);
+        { char hs[32]; ini_str("vr", "screen_height", "-10", hs, sizeof hs); g_vr_height = atoi(hs); }   /* (may be negative) */
+        g_vr_stick = ini_int("vr", "steering", 0) != 0; g_vr_swap = ini_int("vr", "swap_triggers", 0) != 0;
+        if (g_vr_angle < 10) g_vr_angle = 10; if (g_vr_angle > 60) g_vr_angle = 60;
+        g_vr_twist = ini_int("vr", "throttle", 0) != 0; g_vr_twist_angle = ini_int("vr", "twist_angle", 40);
+        vr_settings vs = { g_vr_dist / 100.0f, g_vr_width / 100.0f, g_vr_height / 100.0f, (float)g_vr_angle, g_vr_stick, g_vr_swap, g_vr_twist, (float)g_vr_twist_angle };
+        char verr[600];
+        if (vr_init(&vs, verr, sizeof verr)) {
+            g_vr = 1;
+            sho_stereo_menu_hint("STICK CHANGES Y CLOSES");     /* (in the headset the controllers work it) */
+            sho_stereo_menu_extra("SCREEN HEIGHT", &g_vr_height, -300, 300, 5);      /* centimetres, in the F6 menu */
+            sho_stereo_menu_extra("SCREEN DIST", &g_vr_dist, 50, 2000, 10);
+            sho_stereo_menu_extra("SCREEN WIDTH", &g_vr_width, 50, 4000, 10);
+            {   /* the hand controllers */
+                static const char *const steer_names[2] = { "TILT", "STICK" }, *const trig_names[2] = { "NORMAL", "SWAPPED" }, *const thr_names[2] = { "TRIGGER", "TWIST" };
+                sho_stereo_menu_extra_choice("THROTTLE", &g_vr_twist, 2, thr_names);        /* the trigger, or a twist grip (hold the right grip button, roll the wrist back; triggers brake) */
+                sho_stereo_menu_extra_choice("STEERING", &g_vr_stick, 2, steer_names);      /* tilt the controllers, or the left thumbstick */
+                sho_stereo_menu_extra("TILT ANGLE", &g_vr_angle, 10, 60, 5);              /* degrees of tilt for full lock */
+                sho_stereo_menu_extra_choice("TRIGGERS", &g_vr_swap, 2, trig_names);        /* normal: right = throttle, left = brake */
+            }
+            sho_stereo st; sho_get_stereo(&st);
+            if (st.mode == SHO_3D_OFF) { st.mode = SHO_3D_FULL_SBS; sho_set_stereo(&st); }   /* (not saved: the desktop setting stays) */
+            if (g_fullscreen) set_fullscreen(0);      /* the desktop stays usable; the window shows what the headset shows */
+        } else {
+            char box[900]; snprintf(box, sizeof box, "VR could not be started:\n\n%s\n\nThe game will run on the desktop instead. (Details are in shangon.log.)", verr);
+            sho_diag("VR: not started: %s", verr);
+            if (strstr(cmd, "-vr")) MessageBoxA(g_hwnd, box, "Super Hang-On Ultimate", MB_ICONWARNING);
+        }
+    }
     timeBeginPeriod(1);
     SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
     int have_audio = audio_init();
@@ -871,6 +988,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     double refresh = monitor_refresh();
     if (have_audio) { memset(samples, 0, sizeof samples); audio_submit(samples, 1100); audio_submit(samples, 1100); audio_submit(samples, 1000); }
     double acc = 0, last = now_s(), next_frame = last, audio_frac = 0;
+    double tm_game = 0, tm_vr = 0, tm_win = 0; int tm_frames = 0, tm_loops = 0;   /* VR: time spent per part, for the log */
     sho_pacer pacer; memset(&pacer, 0, sizeof pacer);
     int audio_target = AUDIO_TARGET, underruns = 0, diag_n = 0; long game_frames = 0, diag_frames = 0; double diag_t = last, diag_t0 = last;
     sho_diag("display: %s, reported refresh %.2f Hz, %s", g_use_d3d ? "Direct3D 11" : "GDI", refresh, g_vrr ? "VRR (clock paced)" : "vsync");
@@ -889,7 +1007,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
          * vsync mode: one loop iteration per display refresh. If the refresh is (close to) a multiple of
          * 60 Hz, lock the game to it (k refreshes per game frame) - perfectly even motion. Otherwise
          * distribute 60.05 Hz game frames over refreshes. VRR/GDI: pace by the clock. */
-        int vsync_mode = g_use_d3d && !g_vrr;
+        /* VR: the headset shows the picture on its own thread (win32_vr.c); the game keeps time by the clock, and the
+           window shows the same picture without waiting for the monitor */
+        if (g_vr && vr_poll()) { g_running = 0; PostMessageA(g_hwnd, WM_CLOSE, 0, 0); }
+        int vsync_mode = g_use_d3d && !g_vrr && !g_vr;
         double period;                      /* game frame period actually used */
         int k = (int)(refresh / 60.0 + 0.5); if (k < 1) k = 1;
         int locked = vsync_mode && fabs(refresh - 60.0 * k) <= 0.012 * 60.0 * k;
@@ -914,20 +1035,42 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             period = 1.0 / SHO_FPS;
             if (t < next_frame) { wait_until(next_frame); t = now_s(); }
             frames = 1; next_frame += period;
+            if (g_vr) while (t >= next_frame && frames < 3) { frames++; next_frame += period; }   /* VR: a slow pass is made up for (the picture skips, the game and its sound keep time) */
             if (t - next_frame > 0.1) next_frame = t;      /* fell far behind: resync */
         }
         last = t;
 
+        double tg0 = now_s();
         for (int f = 0; f < frames; f++) {
             sho_input in; read_input(&in, (float)period);
+            if (g_vr) {
+                vr_input(&in, sho_md_overlay_active() || g_pause_menu);   /* the hand controllers as handlebars */
+                if (vr_y_pressed()) toggle_3d_menu();   /* Y: the settings menu, in the headset */
+                if (sho_stereo_menu_shown()) {   /* the left stick works it (first push, then repeating); B closes it */
+                    static int held[4]; int d[4] = { in.nav_up, in.nav_down, in.nav_left, in.nav_right };
+                    for (int i = 0; i < 4; i++) { if (!d[i]) { held[i] = 0; continue; } int h = ++held[i]; if (h == 1 || (h > 20 && h % 4 == 0)) stereo_menu_input(i); }
+                    if (in.pad_b) sho_stereo_menu(0);
+                    in.nav_up = in.nav_down = in.nav_left = in.nav_right = 0; in.pad_b = 0;
+                }
+                vr_settings vs;
+                if (vr_settings_changed(&vs)) {   /* the screen was moved with the right stick: keep it */
+                    g_vr_height = (int)floor(vs.screen_height_off * 100.0f + 0.5f); ini_set_int("vr", "screen_height", g_vr_height);
+                }
+            }
             /* Mega Drive mode: Start pauses during a race, as on the Mega Drive, with a menu under PAUSE */
             { static int start_prev, ptick; int start_edge = in.start && !start_prev; start_prev = in.start;
-              if (!g_paused && start_edge && sho_md_pause_allowed()) { g_paused = 1; g_pause_menu = sho_pause_begin(); ptick = 0; }
+              if (!g_paused && (start_edge || g_want_pause3d) && sho_md_pause_allowed()) {
+                  g_paused = 1; g_pause_menu = sho_pause_begin(); ptick = 0;
+                  if (g_want_pause3d && g_pause_menu) sho_pause_goto_3d(); }
               else if (g_paused && g_pause_menu) {
                   int act = sho_pause_update(&in, ptick++);
                   if (act == 3 || act == 4) { set_shape(g_shape + (act == 3 ? 1 : -1)); act = 0; }   /* DISPLAY: stays paused */
+                  if (act == 5) { save_stereo(); act = 0; }                                        /* the 3D page: a 3D setting */
+                  if (act == 6) { if (g_vr) vr_screen_apply(); act = 0; }                          /* ... a VR screen line */
+                  if (g_close_pause) act = 1;
                   if (act) { sho_pause_end(); apply_sound_levels(1); g_paused = 0; g_pause_menu = 0; if (act == 2) reset_to_title(); }
               }
+              g_want_pause3d = 0; g_close_pause = 0;
               if (g_paused) in.start = 0; }
             if (!g_paused) { sho_set_input(&in); sho_run_frame();
                 if (sho_md_exit_requested()) { g_running = 0; PostMessageA(g_hwnd, WM_CLOSE, 0, 0); }
@@ -950,14 +1093,31 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             if (++frames_since_save >= 60 * 60) { save_nvram(); frames_since_save = 0; }
             game_frames++;
         }
+        double tg1 = now_s(); tm_game += tg1 - tg0; tm_frames += frames; tm_loops++;
         if (t - diag_t >= (diag_n < 2 ? 5.0 : 30.0)) {   /* the log: the speed after 5 and 10 seconds, then every 30 */
             double fps = (game_frames - diag_frames) / (t - diag_t);
             if (diag_n++ && !g_paused) sho_diag("%4.0f s: speed %.1f%% (%.2f game frames a second), refresh used %.2f Hz (reported %.2f), sound cushion %d ms, ran dry %d times",
                                                 t - diag_t0, fps / SHO_FPS * 100.0, fps, vsync_mode ? pacer.used : 0.0, refresh, audio_target * 1000 / AUDIO_RATE, underruns);
+            if (g_vr && tm_loops) {   /* where the time goes, for problem reports */
+                double vfps, vms; vr_stats(t - diag_t, &vfps, &vms);
+                sho_diag("        VR: game %.1f ms a frame, picture hand-over %.1f ms, window %.1f ms (a pass has %.1f); headset %.1f frames a second, %.1f ms each",
+                         tm_frames ? tm_game * 1000.0 / tm_frames : 0.0, tm_vr * 1000.0 / tm_loops, tm_win * 1000.0 / tm_loops, 1000.0 / SHO_FPS, vfps, vms);
+            }
+            tm_game = tm_vr = tm_win = 0; tm_frames = tm_loops = 0;
             diag_t = t; diag_frames = game_frames;
         }
-        present(vsync_mode ? 1 : 0);
+        if (g_vr) {      /* the newest picture to the headset; the window shows it too, 20 times a second (it is only a monitor view) */
+            static int mirror_div;
+            double tv0 = now_s();
+            sho_stereo st; sho_get_stereo(&st);
+            int fw; const uint32_t *fb = sho_present_frame(&fw);
+            vr_present(fb, fw, sho_width(), sho_shapes[g_shape].aspect, st.mode != SHO_3D_OFF && !st.swap ? st.depth : 0);
+            double tv1 = now_s(); tm_vr += tv1 - tv0;
+            if (++mirror_div >= 3) { mirror_div = 0; present(0); tm_win += now_s() - tv1; }
+        } else
+        present(vsync_mode ? 1 : 0);   /* (in VR: the same picture in the window, without waiting for the monitor) */
     }
+    if (g_vr) vr_shutdown();
 
     save_nvram();
     sho_music_unload();

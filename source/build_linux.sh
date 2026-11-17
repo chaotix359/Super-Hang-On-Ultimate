@@ -33,7 +33,7 @@ fi
 [ -z "$SDL2_LIBS" ] && SDL2_LIBS="-lSDL2"
 
 M=src/third_party/musashi
-CORE="src/rc_runtime.c src/rc_ctx.c src/gen/main_rc.c src/gen/sub_rc.c src/sho_core.c src/sho_video.c src/sho_music.c src/sho_md.c src/sho_mdgfx.c src/sho_mdcourse.c src/sho_mdsnd.c
+CORE="src/rc_runtime.c src/rc_ctx.c src/gen/main_rc.c src/gen/sub_rc.c src/sho_core.c src/sho_video.c src/sho_video_eye.c src/sho_music.c src/sho_md.c src/sho_mdgfx.c src/sho_mdcourse.c src/sho_mdsnd.c
       $M/m68kcpu.c $M/m68kops.c $M/m68kdasm.c $M/softfloat/softfloat.c src/third_party/z80/z80.c src/third_party/nukedopn2/ym3438.c src/third_party/nukedopm/opm.c src/third_party/puff/puff.c"
 FRONT="src/ini_file.c src/launcher_core.c src/sho_controls.c src/linux_main.c src/linux_launcher.c"
 

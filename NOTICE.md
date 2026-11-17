@@ -30,6 +30,7 @@ Full licence texts are in `licenses/` (and, for some, next to the code).
 | Component | Location | Licence | Author |
 |---|---|---|---|
 | Musashi 68000 core (with its SoftFloat 2b, repackaged for MAME) | `source/src/third_party/musashi/` | MIT-style – `licenses/Musashi.txt`; SoftFloat terms in `softfloat/README.txt` | Karl Stenerud; John R. Hauser |
+| OpenXR headers (API declarations only) | `source/src/third_party/openxr/` | Apache-2.0 OR MIT – `licenses/OpenXR-headers-MIT.txt` | The Khronos Group Inc. |
 | Z80 core | `source/src/third_party/z80/` | MIT – `licenses/z80-MIT.txt` | superzazu |
 | Nuked-OPM (YM2151) | `source/src/third_party/nukedopm/` | LGPL-2.1 – `licenses/Nuked-OPM-LGPL-2.1.txt` | nukeykt |
 | Nuked-OPN2 (YM2612) | `source/src/third_party/nukedopn2/` | LGPL-2.1 – `licenses/Nuked-OPN2-LGPL-2.1.txt` | nukeykt |

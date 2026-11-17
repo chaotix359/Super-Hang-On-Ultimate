@@ -553,6 +553,17 @@ KEYBOARD
   F8 ..................... Scaling filter (sharp / smooth / sharp-bilinear)
   Alt+Enter or F11 ....... Fullscreen  Esc ................. Leave fullscreen
   Alt+F4 ................. Quit        P ................... Pause      F3 ..... Reset
+  F6 ..................... 3D settings (mode, depth, pop out, swap eyes): in an Original Mode race they are the 3D page of
+                           the PAUSE menu, anywhere else a small menu over the running game        F7 ..... 3D off / half SBS / full SBS
+  VR ..................... the game starts in your headset when one is connected (-novr or [vr] enabled=0: always the desktop) (Virtual
+                           Desktop, Quest Link, Steam Link...). Hold the controllers like handlebars: lower one hand
+                           to lean that way; right trigger = throttle, left trigger = brake, grip = supercharger,
+                           A / B = select / back, X = coin, Menu = start, Y = settings menu (left stick works it), right stick click = recentre the screen,
+                           right stick up / down = move the screen up / down (F6 menu: screen height, distance, width).
+                           In the 3D menu: STEERING (TILT the controllers, or the left STICK), TILT ANGLE (degrees for full
+                           lock), TRIGGERS (NORMAL, or SWAPPED = left throttle / right brake). THROTTLE (TRIGGER, or TWIST = hold the right grip button and
+                           roll that wrist back like a twist grip; both triggers then brake, the left grip is the supercharger). A gamepad works as well, at
+                           the same time, with its usual buttons
   F2 (hold) .............. Arcade test/service menu   9 ...... Service coin
 
 SETTINGS (shangon.ini)

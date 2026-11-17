@@ -30,3 +30,12 @@
      STEP();
  L_002ADA: /* bls     $2ae2 */
      OP(0x002ADC, 0x6306, m68k_op_bls_8, 10);
+@@ -569,6 +575,8 @@
+     OP(0x002BD8, 0x916E, m68k_op_sub_16_re_di, 16);
+     STEP();
+ L_002BDA: /* bsr     $2c0e */
++    /* stereo 3D: the object's size step (its distance) for the sprite slot it is drawn in; no effect on the machine */
++    sho_obj_scale_note((int)m68k_read_memory_16(REG_A[5] + 6), (int)(m68k_read_memory_16(REG_A[5] + 0xe) & 0x7f));
+     OP(0x002BDC, 0x6100, m68k_op_bsr_16, 18);
+     STEP();
+     CALL(M_002C0E, 0x002C0E, 0x002BDE);

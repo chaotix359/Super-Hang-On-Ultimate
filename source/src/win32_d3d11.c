@@ -137,9 +137,9 @@ int d3d_present(const uint32_t *fb, int src_w, int src_h, double aspect, int fil
     RECT rc; GetClientRect(g_wnd, &rc);
     if (rc.right != bb_w || rc.bottom != bb_h) d3d_resize();
     /* upload with one duplicated column on the right so filtering never reads stale texels */
-    static uint32_t padded[1024 * 256];
+    static uint32_t padded[4612 * 256];   /* (wide enough for the 3D picture: 2 eyes x SHO_3D_SUB columns) */
     if (src_w > tex_w || src_h > tex_h) return 0;
-    int up_w = src_w < tex_w && (src_w + 1) * src_h <= 1024 * 256 ? src_w + 1 : src_w;   /* (the launcher's full-size picture goes up as it is) */
+    int up_w = src_w < tex_w && (src_w + 1) * src_h <= 4612 * 256 ? src_w + 1 : src_w;   /* (the launcher's full-size picture goes up as it is) */
     const uint32_t *up = fb;
     if (up_w > src_w) {
         for (int y = 0; y < src_h; y++) {

@@ -168,7 +168,7 @@ def main():
         if os.path.exists(cov):
             os.remove(cov)
         covexe = os.path.join(WORK, "cov_main" + EXE)
-        eng = ["src/sho_core.c", "src/sho_video.c", "src/sho_music.c", "src/sho_md.c", "src/sho_mdgfx.c", "src/sho_mdcourse.c", "src/sho_mdsnd.c",
+        eng = ["src/sho_core.c", "src/sho_video.c", "src/sho_video_eye.c", "src/sho_music.c", "src/sho_md.c", "src/sho_mdgfx.c", "src/sho_mdcourse.c", "src/sho_mdsnd.c",
                M + "/m68kcpu.c", M + "/m68kops.c", M + "/m68kdasm.c", M + "/softfloat/softfloat.c", "src/third_party/z80/z80.c",
                "src/third_party/nukedopn2/ym3438.c", "src/third_party/nukedopm/opm.c", "src/third_party/puff/puff.c"]
         run([cc] + ISYSROOT + ["-O2", "-w", "-Isrc", "-I" + M, "-DM68K_INSTRUCTION_HOOK=2", "-DM68K_INSTRUCTION_CALLBACK(pc)=cov_hook(pc)",
@@ -228,7 +228,7 @@ def main():
         for f in sorted(os.listdir(ovr)):
             if f.endswith(".c"):
                 o.write(open(os.path.join(ovr, f)).read())
-    srcs = ["src/test_main.c", "src/sho_core.c", "src/sho_video.c", "src/sho_music.c", "src/sho_md.c", "src/sho_mdgfx.c", "src/sho_mdcourse.c",
+    srcs = ["src/test_main.c", "src/sho_core.c", "src/sho_video.c", "src/sho_video_eye.c", "src/sho_music.c", "src/sho_md.c", "src/sho_mdgfx.c", "src/sho_mdcourse.c",
             "src/sho_mdsnd.c", "src/rc_runtime.c", "src/gen/main_rc.c", "src/gen/sub_rc.c", rel(os.path.join(WORK, "overrides_all.c")),
             M + "/m68kcpu.c", M + "/m68kops.c", M + "/m68kdasm.c", M + "/softfloat/softfloat.c", "src/third_party/z80/z80.c",
             "src/third_party/nukedopn2/ym3438.c", "src/third_party/nukedopm/opm.c", "src/third_party/puff/puff.c"]

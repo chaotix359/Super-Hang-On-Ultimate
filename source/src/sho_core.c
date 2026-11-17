@@ -72,7 +72,229 @@ static int snd_music = 10, snd_sfx = 10;   /* 0-10, set from the pause menu */
 int sho_wide_xo = 0;                      /* extra pixels each side (read by game-logic overrides) */
 void sho_video_set_margin(int xo); int sho_video_width(void);
 static void redraw_frame(void);
-static int frame_drawn;                   /* a frame has been made (so it can be drawn again at another width) */
+static int frame_drawn;
+/* ---- stereo 3D (sho_core.h) ----
+ * With 3D on, each frame is also drawn for the left and the right eye (sho_video.c moves every layer by its depth),
+ * and once more plain without side effects. The normal framebuffer stays what it always was: the Mega Drive
+ * screens, HUD and menus are drawn onto it as before. Whatever differs between it and the plain copy was drawn
+ * afterwards (an overlay) and goes to both eyes unmoved, i.e. on the screen's own depth. */
+static sho_stereo stereo = { SHO_3D_OFF, 13, 8, 0 };
+static int pause_kept;      /* (the pause menu is up: further down) */
+void md_compose(uint32_t *fb, int width);
+void sho_video_render_eye(uint32_t *fb, int eye); void sho_video_stereo_params(int depth, int pop); void sho_video_stereo_cache(int on);
+/* What is drawn onto the finished picture afterwards (Mega Drive screens and HUD, the pause menu, the 3D menu) is
+   found exactly, not by comparing colours: before the drawing every pixel gets a mark in its unused top byte, and
+   whatever no longer carries it afterwards was drawn. ovl = by md_compose for the frame, ovl_p = by the pause menu. */
+#define OVL_MARK 0xA5000000u
+static uint8_t ovl[SHO_MAX_W * SHO_H], ovl_p[SHO_MAX_W * SHO_H]; static int ovl_any, ovl_p_any;
+static void ovl_mark(uint32_t *fb, int n) { for (int i = 0; i < n; i++) fb[i] = (fb[i] & 0xffffff) | OVL_MARK; }
+static int ovl_take(uint32_t *fb, int n, uint8_t *m) {      /* marks off again; m[i] = 1 where something was drawn */
+    int any = 0;
+    for (int i = 0; i < n; i++) { if ((fb[i] & 0xff000000u) == OVL_MARK) { fb[i] &= 0xffffff; m[i] = 0; } else { m[i] = 1; any = 1; } }
+    return any;
+}
+/* md_compose with the drawn pixels noted (3D on); exactly md_compose with 3D off */
+static void compose_frame(void) {
+    int n = sho_video_width() * SHO_H;
+    if (stereo.mode == SHO_3D_OFF) { md_compose(framebuffer, sho_video_width()); return; }
+    ovl_mark(framebuffer, n); md_compose(framebuffer, sho_video_width()); ovl_any = ovl_take(framebuffer, n, ovl);
+}
+static uint32_t eye_mono[SHO_MAX_W * SHO_H], present_fb[2 * SHO_MAX_W * SHO_3D_SUB * SHO_H], osd_fb[SHO_MAX_W * SHO_H];
+static int eyes_valid, eyes_w, mono_w, st_menu, st_cursor;
+/* Each object's size step (0..127, the game's own measure of its distance: index of its zoom/art table at
+   $CBA6), noted by the M_002A0C override when the object is projected into slot n of the sprite work list
+   ($61400, 12 bytes each). The list is copied to sprite RAM entry for entry at vblank ($184C): the notes move to
+   the displayed set at that moment, so they always belong to the sprites on screen. 0xff = not known. */
+static uint8_t obj_scale_work[256]; uint8_t sho_obj_scale[256];
+void sho_obj_scale_note(int slot, int step) { if (slot >= 0 && slot < 256) obj_scale_work[slot] = (uint8_t)step; }
+static void obj_scale_latch(void) { memcpy(sho_obj_scale, obj_scale_work, sizeof sho_obj_scale); }
+/* The eyes' pictures are not drawn with every frame the machine makes, only when one is shown: when the game makes
+   up lost time, or hurries through hidden frames, several frames go by for one picture. So each frame only leaves a
+   copy of what the video chips held when its normal picture was drawn (90 KB); sho_present_frame puts that back for
+   a moment and draws the two eyes from it. */
+extern int sho_video_hide_player, sho_video_hide_title_text, sho_video_nextra; extern uint16_t sho_video_extra_sprites[4][6];
+extern unsigned char md_obj_kind[256];
+typedef struct {
+    uint8_t tileram[0x10000], textram[0x1000], palram[0x2000], sprram[0x1000], roadbuf[0x1000], obj_scale[256], obj_kind[256];
+    int road_control, hide_player, hide_title, nextra, sky_acc; uint16_t extra[4][6]; void *scene; long frame_no, menu_last;
+} video_snap;
+/* Two cores: with a worker thread from the frontend (sho_stereo_set_worker) the right eye is drawn there by the
+   renderer's second copy (sho_video_eye.c) from its own machine sho_e_M, while the left eye is drawn here. */
+sho_machine *sho_e_M; uint8_t sho_e_obj_scale[256]; unsigned char sho_e_obj_kind[256]; long sho_e_frame_no, sho_e_menu_last_frame; int sho_e_sky_acc;
+extern int sho_e_hide_player, sho_e_hide_title_text, sho_e_nextra; extern uint16_t sho_e_extra_sprites[4][6];
+void sho_e_init(void); void sho_e_render_eye(uint32_t *fb, int eye); void sho_e_set_margin(int xo); void sho_e_stereo_params(int depth, int pop); void sho_e_md_scene_set(void *p);
+extern int sho_bk_ok, sho_video_sky_acc;
+static void (*worker_start)(void (*job)(void)), (*worker_wait)(void);
+void sho_stereo_set_worker(void (*start)(void (*job)(void)), void (*wait)(void)) { worker_start = start; worker_wait = wait; }
+static uint32_t eye_fb[2][SHO_MAX_W * SHO_3D_SUB * SHO_H];
+static void eye_job(void) { sho_e_render_eye(eye_fb[1], +1); }
+static video_snap snap, snap_hold; static int snap_have, snap_dirty;
+extern void *sho_md_scene_ptr(void); extern void sho_md_scene_set(void *p);
+static void snap_take(video_snap *v) {
+    memcpy(v->tileram, M->tileram, sizeof v->tileram); memcpy(v->textram, M->textram, sizeof v->textram); memcpy(v->palram, M->palram, sizeof v->palram);
+    memcpy(v->sprram, M->sprram, sizeof v->sprram); memcpy(v->roadbuf, M->roadbuf, sizeof v->roadbuf);
+    memcpy(v->obj_scale, sho_obj_scale, 256); memcpy(v->obj_kind, md_obj_kind, 256);
+    v->road_control = M->road_control; v->hide_player = sho_video_hide_player; v->hide_title = sho_video_hide_title_text;
+    v->nextra = sho_video_nextra; memcpy(v->extra, sho_video_extra_sprites, sizeof v->extra); v->scene = sho_md_scene_ptr();
+    v->frame_no = sho_frame_no; v->menu_last = sho_menu_last_frame; v->sky_acc = sho_video_sky_acc;
+}
+/* the frame's video state into the second renderer's machine; 0 = that machine can't be had */
+static int eye_machine_put(const video_snap *v) {
+    if (!sho_e_M) {
+        sho_e_M = (sho_machine *)malloc(sizeof *sho_e_M); if (!sho_e_M) return 0;
+        memcpy(sho_e_M, M, sizeof *sho_e_M);      /* (the graphics ROMs: once) */
+        sho_e_init();
+    }
+    memcpy(sho_e_M->tileram, v->tileram, sizeof v->tileram); memcpy(sho_e_M->textram, v->textram, sizeof v->textram); memcpy(sho_e_M->palram, v->palram, sizeof v->palram);
+    memcpy(sho_e_M->sprram, v->sprram, sizeof v->sprram); memcpy(sho_e_M->roadbuf, v->roadbuf, sizeof v->roadbuf);
+    memcpy(sho_e_obj_scale, v->obj_scale, 256); memcpy(sho_e_obj_kind, v->obj_kind, 256);
+    sho_e_M->road_control = v->road_control; sho_e_hide_player = v->hide_player; sho_e_hide_title_text = v->hide_title;
+    sho_e_nextra = v->nextra; memcpy(sho_e_extra_sprites, v->extra, sizeof v->extra); sho_e_md_scene_set(v->scene);
+    sho_e_frame_no = v->frame_no; sho_e_menu_last_frame = v->menu_last; sho_e_sky_acc = v->sky_acc;
+    sho_e_set_margin(sho_wide_xo); sho_e_stereo_params(stereo.depth, stereo.pop);
+    return 1;
+}
+static void snap_put(const video_snap *v) {
+    memcpy(M->tileram, v->tileram, sizeof v->tileram); memcpy(M->textram, v->textram, sizeof v->textram); memcpy(M->palram, v->palram, sizeof v->palram);
+    memcpy(M->sprram, v->sprram, sizeof v->sprram); memcpy(M->roadbuf, v->roadbuf, sizeof v->roadbuf);
+    memcpy(sho_obj_scale, v->obj_scale, 256); memcpy(md_obj_kind, v->obj_kind, 256);
+    M->road_control = v->road_control; sho_video_hide_player = v->hide_player; sho_video_hide_title_text = v->hide_title;
+    sho_video_nextra = v->nextra; memcpy(sho_video_extra_sprites, v->extra, sizeof v->extra); sho_md_scene_set(v->scene);
+    sho_frame_no = v->frame_no; sho_menu_last_frame = v->menu_last;
+}
+static void render_eyes(void) {
+    eyes_valid = 0; snap_dirty = 0;
+    if (stereo.mode == SHO_3D_OFF || !snap_have) return;
+    sho_video_stereo_params(stereo.depth, stereo.pop);
+    /* the right eye on the worker's core, if there is one (and the frame's backdrop is there for both to read) */
+    int par = worker_start && worker_wait && sho_bk_ok && eye_machine_put(&snap);
+    if (par) worker_start(eye_job);
+    snap_take(&snap_hold); snap_put(&snap);      /* the video chips as that frame had them ... */
+    sho_video_render_eye(eye_fb[0], -1);
+    if (!par) sho_video_render_eye(eye_fb[1], +1);
+    snap_put(&snap_hold);                        /* ... and back as they are */
+    if (par) worker_wait();
+    eyes_valid = 1; eyes_w = sho_video_width();
+}
+static void render_all(void) {
+    sho_video_stereo_cache(stereo.mode != SHO_3D_OFF); ovl_any = 0;
+    sho_video_render(framebuffer);
+    if (stereo.mode != SHO_3D_OFF) { snap_take(&snap); snap_have = 1; snap_dirty = 1; }
+}
+void sho_get_stereo(sho_stereo *s) { *s = stereo; }
+void sho_set_stereo(const sho_stereo *s) {
+    stereo = *s;
+    if (stereo.mode < 0 || stereo.mode > SHO_3D_FULL_SBS) stereo.mode = SHO_3D_OFF;
+    if (stereo.depth < 0) stereo.depth = 0; if (stereo.depth > SHO_3D_MAX_DEPTH) stereo.depth = SHO_3D_MAX_DEPTH;
+    if (stereo.pop < 0) stereo.pop = 0; if (stereo.pop > 10) stereo.pop = 10;
+    stereo.swap = !!stereo.swap;
+    if (frame_drawn && M) { if (!snap_have && stereo.mode != SHO_3D_OFF) { snap_take(&snap); snap_have = 1; } snap_dirty = 1; }   /* (a paused picture changes at once: drawn again when next shown) */
+}
+/* extra lines the frontend adds under the 3D settings (e.g. the VR screen's height): a name and an int it owns */
+static struct { const char *label; int *value; int lo, hi, step; const char *const *names; } st_extra[8]; static int st_nextra;
+void sho_stereo_menu_extra(const char *label, int *value, int lo, int hi, int step) {
+    if (!label) { st_nextra = 0; if (st_cursor > 3) st_cursor = 0; return; }
+    if (st_nextra < 8) { st_extra[st_nextra].label = label; st_extra[st_nextra].value = value; st_extra[st_nextra].lo = lo; st_extra[st_nextra].hi = hi; st_extra[st_nextra].step = step; st_extra[st_nextra].names = NULL; st_nextra++; }
+}
+void sho_stereo_menu_extra_choice(const char *label, int *value, int count, const char *const *names) {
+    if (st_nextra < 8 && count > 0) { sho_stereo_menu_extra(label, value, 0, count - 1, 1); st_extra[st_nextra - 1].names = names; }
+}
+void sho_stereo_menu_extra_text(int i, char *buf, int n) {      /* the line's value as shown */
+    if (i < 0 || i >= st_nextra) { if (n) buf[0] = 0; return; }
+    int v = *st_extra[i].value;
+    if (st_extra[i].names && v >= st_extra[i].lo && v <= st_extra[i].hi) snprintf(buf, (size_t)n, "%s", st_extra[i].names[v]); else snprintf(buf, (size_t)n, "%d", v);
+}
+int sho_stereo_menu_extra_get(int i, const char **label, int **value, int *lo, int *hi, int *step) {
+    if (i < 0 || i >= st_nextra) return 0;
+    if (label) *label = st_extra[i].label; if (value) *value = st_extra[i].value;
+    if (lo) *lo = st_extra[i].lo; if (hi) *hi = st_extra[i].hi; if (step) *step = st_extra[i].step;
+    return 1;
+}
+static char st_hint[24] = "ARROWS CHANGE F6 CLOSE";
+void sho_stereo_menu_hint(const char *text) { snprintf(st_hint, sizeof st_hint, "%s", text ? text : ""); }
+void sho_stereo_menu(int show) { st_menu = !!show; }
+int sho_stereo_menu_shown(void) { return st_menu; }
+int sho_stereo_menu_key(int key) {             /* 0 up, 1 down, 2 left, 3 right; returns 1 if a setting changed */
+    if (!st_menu) return 0;
+    int rows = 4 + st_nextra;
+    if (key == 0) { st_cursor = (st_cursor + rows - 1) % rows; return 0; }
+    if (key == 1) { st_cursor = (st_cursor + 1) % rows; return 0; }
+    if (key != 2 && key != 3) return 0;
+    int d = key == 3 ? 1 : -1; sho_stereo n = stereo;
+    if (st_cursor >= 4) {      /* a frontend line: returns 2 */
+        int *v = st_extra[st_cursor - 4].value, nv = *v + d * st_extra[st_cursor - 4].step, lo_ = st_extra[st_cursor - 4].lo, hi_ = st_extra[st_cursor - 4].hi;
+        if (st_extra[st_cursor - 4].names) { if (nv < lo_) nv = hi_; else if (nv > hi_) nv = lo_; }      /* choices go round */
+        if (nv < lo_) nv = lo_; if (nv > hi_) nv = hi_;
+        *v = nv; return 2;
+    }
+    switch (st_cursor) {
+    case 0: n.mode = (n.mode + d + 3) % 3; break;
+    case 1: n.depth += d; break;
+    case 2: n.pop += d; break;
+    case 3: n.swap = !n.swap; break;
+    }
+    sho_set_stereo(&n);
+    return 1;
+}
+/* the 3D menu, in the arcade's text font with fixed colours, over a darkened box */
+static void osd_text(uint32_t *fb, int fbw, int x, int y, const char *t, uint32_t c) {
+    for (; *t; t++, x += 8) {
+        int ch = (unsigned char)*t; if (ch < 32 || ch > 127 || ch == ' ') continue;
+        for (int j = 0; j < 8; j++) {
+            uint8_t b0 = M->tiles[ch * 8 + j], b1 = M->tiles[0x8000 + ch * 8 + j], b2 = M->tiles[0x10000 + ch * 8 + j];
+            for (int i = 0; i < 8; i++) {
+                int sh = 7 - i, p = ((b2 >> sh) & 1) << 2 | ((b1 >> sh) & 1) << 1 | ((b0 >> sh) & 1), X = x + i, Y = y + j;
+                if (p && X >= 0 && X < fbw && Y >= 0 && Y < SHO_H) fb[Y * fbw + X] = p == 1 ? 0x101010 : c;
+            }
+        }
+    }
+}
+static void osd_menu(uint32_t *fb, int fbw, int x0, int vw) {      /* into the view vw wide that starts at x0 */
+    static const char *const modes[3] = { "OFF", "HALF SBS", "FULL SBS" };
+    char line[13][40]; int nl = 5 + st_nextra;
+    snprintf(line[0], 40, "3D SETTINGS");
+    snprintf(line[1], 40, "MODE          %s", modes[stereo.mode]);
+    snprintf(line[2], 40, "DEPTH         %d", stereo.depth);
+    snprintf(line[3], 40, "POP OUT       %d", stereo.pop);
+    snprintf(line[4], 40, "SWAP EYES     %s", stereo.swap ? "YES" : "NO");
+    for (int i = 0; i < st_nextra; i++) { char v[16]; sho_stereo_menu_extra_text(i, v, sizeof v); snprintf(line[5 + i], 40, "%-13.13s %s", st_extra[i].label, v); }
+    int bw = 22 * 8 + 16, bh = (nl + 1) * 12 + 12, bx = x0 + (vw - bw) / 2, by = (SHO_H - bh) / 2;
+    for (int y = by; y < by + bh; y++) for (int x = bx; x < bx + bw; x++)
+        if (x >= x0 && x < x0 + vw && y >= 0 && y < SHO_H) { uint32_t *q = &fb[y * fbw + x]; *q = (*q >> 2) & 0x3f3f3f; }
+    osd_text(fb, fbw, bx + 8 + 44, by + 8, line[0], 0xffffff);
+    for (int i = 1; i < nl; i++) osd_text(fb, fbw, bx + 8, by + 12 + i * 12, line[i], st_cursor == i - 1 ? 0xffe020 : 0xc8c8c8);
+    osd_text(fb, fbw, bx + 8, by + 12 + nl * 12 + 2, st_hint, 0x80c0ff);
+}
+const uint32_t *sho_present_frame(int *w) {
+    int vw = sho_video_width();
+    if (stereo.mode != SHO_3D_OFF && M && (snap_dirty || (snap_have && eyes_w != vw))) render_eyes();
+    if (stereo.mode == SHO_3D_OFF || !eyes_valid || eyes_w != vw) {
+        if (w) *w = vw;
+        if (!st_menu || !M) return framebuffer;
+        memcpy(present_fb, framebuffer, (size_t)vw * SHO_H * 4);
+        osd_menu(present_fb, vw, 0, vw);
+        return present_fb;
+    }
+    const uint32_t *l = eye_fb[stereo.swap ? 1 : 0], *r = eye_fb[stereo.swap ? 0 : 1], *fin = framebuffer;
+    static uint8_t ovl_m[SHO_MAX_W * SHO_H];
+    if (st_menu) {   /* the menu goes onto a copy of the finished picture: it is then one more overlay */
+        memcpy(osd_fb, framebuffer, (size_t)vw * SHO_H * 4); ovl_mark(osd_fb, vw * SHO_H); osd_menu(osd_fb, vw, 0, vw); ovl_take(osd_fb, vw * SHO_H, ovl_m); fin = osd_fb;
+    }
+    int pk = pause_kept && ovl_p_any;
+    int K = SHO_3D_SUB, ew = vw * K;           /* an eye's picture: K columns per game pixel */
+    for (int y = 0; y < SHO_H; y++) {
+        const uint32_t *f = fin + y * vw, *a = l + y * ew, *b = r + y * ew;
+        const uint8_t *m0 = ovl + y * vw, *m1 = ovl_p + y * vw, *m2 = ovl_m + y * vw;
+        uint32_t *o = present_fb + y * 2 * ew;
+        if (!ovl_any && !pk && !st_menu) { memcpy(o, a, (size_t)ew * 4); memcpy(o + ew, b, (size_t)ew * 4); continue; }   /* nothing was drawn over the game's picture */
+        for (int x = 0; x < vw; x++) {
+            if ((ovl_any && m0[x]) || (pk && m1[x]) || (st_menu && m2[x])) { for (int k = 0; k < K; k++) { o[x * K + k] = f[x]; o[ew + x * K + k] = f[x]; } }      /* drawn over the game's picture: screen depth */
+            else { for (int k = 0; k < K; k++) { o[x * K + k] = a[x * K + k]; o[ew + x * K + k] = b[x * K + k]; } }
+        }
+    }
+    if (w) *w = 2 * ew;
+    return present_fb;
+}                   /* a frame has been made (so it can be drawn again at another width) */
 void sho_set_view_width(int w) {
     if (w < SHO_W) w = SHO_W;
     if (w > SHO_MAX_W) w = SHO_MAX_W;
@@ -179,7 +401,7 @@ static void main_write8(unsigned a, unsigned v) {
     if (a >= 0x100000 && a < 0x110000) { M->tileram[a & 0xffff] = (uint8_t)v; sho_debug_tile_writes++; sho_debug_last_tile = a; return; }
     if (a >= 0x110000 && a < 0x120000) { M->textram[a & 0xfff] = (uint8_t)v; return; }
     if (a >= 0x120000 && a < 0x130000) { M->palram[a & 0x1fff] = (uint8_t)v; return; }
-    if (a >= 0x130000 && a < 0x140000) { M->sprram[a & 0xfff] = (uint8_t)v; return; }
+    if (a >= 0x130000 && a < 0x140000) { if (!(a & 0xfff)) obj_scale_latch(); M->sprram[a & 0xfff] = (uint8_t)v; return; }
     if (a >= 0x140000 && a < 0x150000) { io_write8(a, v); return; }
     if (a >= 0x200000 && a < 0x300000) { sub_write8(a, v); return; }
     if (a & 1) mapper_write((a >> 1) & 0x1f, v);
@@ -365,7 +587,7 @@ static void run_frame_internal(void) {
         }
         z_target += Z80_PER_LINE;
         z_run_until(z_target);
-        if (line == 223) sho_video_render(framebuffer);
+        if (line == 223) render_all();
     }
     sho_frame_no++;
     /* requests the initials screen hasn't picked up within a few frames are dropped */
@@ -380,22 +602,30 @@ static void run_frame_internal(void) {
 void sho_run_frame(void) {
     frame_drawn = 1;
     if (!md_enabled) { run_frame_internal(); return; }
-    if (md_frozen()) { md_pre_frame(); sho_video_render(framebuffer); md_compose(framebuffer, sho_video_width()); return; }   /* the arcade holds still (the title under the mode choice) */
+    if (md_frozen()) { md_pre_frame(); render_all(); compose_frame(); return; }   /* the arcade holds still (the title under the mode choice) */
     md_pre_frame(); run_frame_internal(); md_post_frame();
     for (int n = md_extra_frames(); n > 0; n--) { md_pre_frame(); run_frame_internal(); md_post_frame(); }
-    md_compose(framebuffer, sho_video_width());
+    compose_frame();
 }
 
 /* Mega Drive mode pause: the frame is kept and the pause menu drawn over it */
 static uint32_t pause_keep[SHO_MAX_W * SHO_H]; static int pause_kept, pause_tick;
 static char pause_display[24] = "16:9";
 /* the current frame again at the current width (the game doesn't move: the video chips' state is drawn once more) */
+/* the pause menu onto the framebuffer (the kept frame), its pixels noted for the 3D picture */
+static int pause_draw(const sho_input *in) {
+    int n = sho_video_width() * SHO_H, mark = stereo.mode != SHO_3D_OFF;
+    if (mark) ovl_mark(framebuffer, n);
+    int act = md_pause_menu(framebuffer, sho_video_width(), pause_tick, in, &snd_music, &snd_sfx, pause_display);
+    if (mark) ovl_p_any = ovl_take(framebuffer, n, ovl_p); else ovl_p_any = 0;
+    return act;
+}
 static void redraw_frame(void) {
-    sho_video_render(framebuffer);
-    if (md_enabled) md_compose(framebuffer, sho_video_width());
+    render_all();
+    if (md_enabled) compose_frame();
     if (pause_kept) {   /* the pause menu goes over the new one */
         memcpy(pause_keep, framebuffer, sizeof pause_keep);
-        md_pause_menu(framebuffer, sho_video_width(), pause_tick, NULL, &snd_music, &snd_sfx, pause_display);
+        pause_draw(NULL);
     }
 }
 void sho_pause_set_display(const char *name) { snprintf(pause_display, sizeof pause_display, "%s", name ? name : ""); }
@@ -408,9 +638,11 @@ int sho_pause_update(const sho_input *in, int tick) {
     if (!pause_kept) return 1;
     memcpy(framebuffer, pause_keep, sizeof pause_keep);
     pause_tick = tick;
-    return md_pause_menu(framebuffer, sho_video_width(), tick, in, &snd_music, &snd_sfx, pause_display);
+    return pause_draw(in);
 }
-void sho_pause_end(void) { if (pause_kept) memcpy(framebuffer, pause_keep, sizeof pause_keep); pause_kept = 0; }
+void sho_pause_enable_3d(int on) { md_pause_enable_3d(on); }
+void sho_pause_goto_3d(void) { if (pause_kept) md_pause_goto_3d(); }
+void sho_pause_end(void) { if (pause_kept) memcpy(framebuffer, pause_keep, sizeof pause_keep); pause_kept = 0; ovl_p_any = 0; }
 void sho_set_sound_levels(int music, int sfx) { snd_music = music < 0 ? 0 : music > 10 ? 10 : music; snd_sfx = sfx < 0 ? 0 : sfx > 10 ? 10 : sfx; }
 void sho_get_sound_levels(int *music, int *sfx) { *music = snd_music; *sfx = snd_sfx; }
 
@@ -513,6 +745,7 @@ void sho_reset(void) {
     sho_music_stop();
     memset(M->subram, 0, sizeof M->subram); memset(M->roadram, 0, sizeof M->roadram); memset(M->roadbuf, 0, sizeof M->roadbuf);
     memset(M->tileram, 0, sizeof M->tileram); memset(M->textram, 0, sizeof M->textram);
+    memset(obj_scale_work, 0xff, sizeof obj_scale_work); memset(sho_obj_scale, 0xff, sizeof sho_obj_scale);
     memset(M->palram, 0, sizeof M->palram); memset(M->sprram, 0, sizeof M->sprram); memset(M->zram, 0, sizeof M->zram);
     memset(mapregs, 0, sizeof mapregs); main_halted = 0; pending_sub_reset = 0;
     M->road_control = 0; M->out0 = 0; M->out20 = 0;

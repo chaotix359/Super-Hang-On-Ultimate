@@ -516,3 +516,61 @@ Original Mode race: arcade stop commands (00,83,8e,92,9e,9f) no longer reach the
 - `sho_diag_open` / `sho_diag`: shangon.log (5 s, 10 s, then every 30 s: speed, refresh used, sound cushion, dry count).
 - Linux launcher development hooks: LAUNCHER_KEYS=udlrestk / c"x,y," with LAUNCHER_SHOT.
 - Mac parts were written without a Mac to compile on: build with build_mac.sh and fix what the compiler reports.
+
+## Stereo 3D (side by side)
+- `sho_video.c`: `sho_video_render_eye(fb, eye)` draws the frame for one eye, `SHO_3D_SUB` (4) columns per game pixel,
+  so shifts are quarter pixels. `stereo_setup` gives every layer a sideways shift from the distance the game itself
+  has for it, as q = "rows below the horizon on a flat road" (0 = infinitely far, 95 = bottom row):
+  - road line: the road generator's size index for that line / 2 (it is exactly 2 per row on a flat road, and the
+    true distance on hills);
+  - sprite: the object's size step (object +$E & $7F, the index of its zoom/art table at $CBA6), noted per sprite
+    slot by the `M_002A0C` override (`sho_obj_scale_note`; object +6 = slot in the work list $61400, copied 1:1 to
+    sprite RAM at $184C - the notes are latched at that copy). Measured: q = 0.87 x step - 8. Sprites without a note
+    (interpreter CPU, sprites not made by that routine) take the q of the road line under their bottom row;
+  - tile layers and the Mega Drive sky strip: the far backdrop, whole-pixel shift; text layer: the screen.
+  Parallax = depth for the backdrop; for n = q / 95, m = n^0.7: 0.75 x depth x (1 - m) - depth x pop / 10 x m.
+  Without a road (title, menus) the backdrop sits half the depth behind and sprites stay on the screen.
+  Eye passes have no side effects (sprite RAM write-back, title timer); `st_eye == 0` is the unchanged normal picture.
+- `sho_core.c`: with 3D on, `render_all` keeps a plain copy and draws both eyes. `sho_present_frame` builds
+  left | right (2 x SHO_3D_SUB x width): where the finished framebuffer differs from the plain copy something was
+  drawn afterwards (Mega Drive HUD, menus, pause menu, goal bike, the 3D menu) and that pixel goes to both eyes
+  unmoved (screen depth). 3D off: pictures, machine state and sound identical to before; 3D on: machine state
+  identical (HASHLOG). Cost: about 3 ms a frame.
+- Windows: `[video] 3d, 3d_depth, 3d_pop, 3d_swap`; F6 = menu (arrows; the game keeps running), F7 = off / half / full.
+  Half SBS is presented at the normal aspect, full SBS at twice it. Linux and Mac frontends still show the normal picture.
+- Cost control: (1) the backdrop (road generator's plain lines + the tile layers) is drawn once a frame, 16 pixels
+  wider each side, into `bk16`/`bkpri` and copied by both eyes (it was over half an eye's work); (2) the eyes are drawn
+  only for frames that are shown: each frame leaves a `video_snap` (the video RAMs, 90 KB) and `sho_present_frame`
+  draws the eyes from it - catching up or hidden fast-forward no longer draws eyes for frames nobody sees;
+  (3) overlays are found exactly: every pixel is marked in its top byte before `md_compose` / the pause menu / the 3D
+  menu draw, and what lost the mark was drawn (comparing colours let the eyes' picture show through wherever a menu
+  pixel happened to equal the game's pixel under it - visible as speckles on the Mega Drive screens).
+  (4) two cores: `sho_video_eye.c` is `sho_video.c` compiled a second time with its names changed and its own
+  machine (`sho_e_M`, a copy with the frame's video RAMs put in). With a worker from the frontend
+  (`sho_stereo_set_worker`; Windows: `eye_worker`) the right eye is drawn there while the left is drawn on the game's
+  thread; both only read the frame's backdrop. Pictures are identical to drawing them in turn (test hooks
+  `STEREO_PAR`, and a pthread worker with `-DTEST_THREADS` + `STEREO_THR`).
+- Pause menu (`md_pause_menu`, Original Mode races): with `sho_pause_enable_3d(1)` it has a 3D page (page 2: MODE,
+  DEPTH, POP OUT, SWAP EYES, the frontend's `sho_stereo_menu_extra` lines, BACK); `sho_pause_update` returns 5 / 6 when
+  a 3D setting / a frontend line changed. F6 and the VR controller's Y open the pause menu on that page where the
+  pause menu exists, and the small overlay menu elsewhere (the arcade game has no menu of its own).
+- Test hooks: `STEREO=mode,depth,pop,swap[,menu]` makes the screenshots left | right; `STLOG=n` prints every n frames
+  each sprite's size step and position and the road's size index per line.
+
+## Windows VR (OpenXR)
+- `win32_vr.c`: `[vr] enabled=1` or `-vr`. No SDK or DLL needed: `openxr_loader.dll` is used if present, otherwise the
+  active runtime is loaded straight from its registry manifest (API layers are then skipped). Own D3D11 device on the
+  runtime's adapter; one swapchain holds left | right, each game pixel 4 columns x 3 rows; two quad layers (one per eye) on the same
+  rectangle in LOCAL space, placed in front of the head at session start and on right-stick click.
+- Pace: the headset has its own thread (`vr_thread`: xrWaitFrame / xrBeginFrame, controllers, newest picture,
+  xrEndFrame). The game runs by the clock exactly as in the non-vsync desktop path, hands each finished picture over
+  with `vr_present` and takes the controller snapshot in `vr_input`; shared data is under one critical section.
+  (The first version ran the game off xrWaitFrame: runtimes slow or stop those frames whenever the headset is not
+  showing the app, and a slow headset frame held the game and its sound up.) The window mirrors the picture with
+  sync interval 0.
+- Depth is not limited: when the backdrop's parallax on the virtual screen would exceed 63 mm (eye distance =
+  infinity), each eye's quad slides inwards by half the excess, so the backdrop sits at infinity and the rest nearer.
+- Handlebars: tilt of the line between the two grip poses = steer (`steer_angle` for full lock); right / left trigger =
+  throttle / brake; grip = turbo; A / B = select / back; X = coin; menu = start; Y = the F6 menu (left stick, B closes); left stick = menu directions.
+- Untested on hardware when written: compiled only.
+
